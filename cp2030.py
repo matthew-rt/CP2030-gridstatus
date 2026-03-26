@@ -194,18 +194,6 @@ def cp2030_generation(elexon, neso):
     }
 
 
-def cp2030_interconnectors(elexon, pre_ic_balance_mw):
-    """Apply CP2030 interconnector direction logic:
-    - Surplus: keep exports (negative flows), zero out imports
-    - Deficit: keep imports (positive flows), zero out exports
-    Returns net interconnector MW (positive = net import)."""
-    flows = {f: elexon.get(f, 0) for f in INTERCONNECTOR_FUELS}
-    if pre_ic_balance_mw >= 0:
-        return round(sum(min(v, 0) for v in flows.values()))
-    else:
-        return round(sum(max(v, 0) for v in flows.values()))
-
-
 def run_model(elexon, neso, state):
     """Run one settlement period of the CP2030 model. Mutates and returns state."""
     demand_actual = actual_demand(elexon, neso)
@@ -214,8 +202,13 @@ def run_model(elexon, neso, state):
     gen = cp2030_generation(elexon, neso)
     clean_gen = gen["wind_mw"] + gen["solar_mw"] + gen["nuclear_mw"] + gen["hydro_mw"]
 
-    net_ic = cp2030_interconnectors(elexon, clean_gen - demand_cp2030)
-    balance = clean_gen + net_ic - demand_cp2030
+    # Available interconnector capacity in each direction based on current flows.
+    # Positive = import capacity, negative = export capacity.
+    ic_flows = {f: elexon.get(f, 0) for f in INTERCONNECTOR_FUELS}
+    max_import_mw =  sum(max(v, 0) for v in ic_flows.values())   # > 0
+    max_export_mw =  sum(min(v, 0) for v in ic_flows.values())   # < 0
+
+    balance = clean_gen - demand_cp2030
 
     battery_soc = state["battery_soc_mwh"]
     ldes_soc = state["ldes_soc_mwh"]
@@ -223,6 +216,7 @@ def run_model(elexon, neso, state):
     battery_charge_mw = battery_discharge_mw = 0
     ldes_charge_mw = ldes_discharge_mw = 0
     biomass_mw = gas_mw = curtailment_mw = 0
+    net_ic = 0
 
     if balance >= 0:
         surplus = float(balance)
@@ -247,10 +241,19 @@ def run_model(elexon, neso, state):
         ldes_charge_mw = ldes_charge_energy_in * 2
         surplus -= ldes_charge_mw
 
+        # Export remaining surplus, capped at current export flows
+        export_mw = max(max_export_mw, -surplus)   # both negative; less negative = less export
+        net_ic = round(export_mw)
+        surplus += export_mw   # export_mw is negative, reduces surplus
+
         curtailment_mw = surplus
 
     else:
         deficit = float(-balance)
+
+        # Import up to available interconnector capacity
+        net_ic = round(min(max_import_mw, deficit))
+        deficit -= net_ic
 
         # Discharge batteries
         max_bat_power = min(
