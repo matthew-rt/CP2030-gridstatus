@@ -48,9 +48,13 @@ HISTORY_SIZE = 48  # 24 hours of half-hourly readings
 ELEXON_URL = (
     "https://data.elexon.co.uk/bmrs/api/v1/generation/outturn/current?format=json"
 )
+ELEXON_IC_URL = (
+    "https://data.elexon.co.uk/bmrs/api/v1/generation/outturn/interconnectors"
+)
 NESO_URL = "https://api.neso.energy/api/3/action/datastore_search_sql"
 NESO_DATASET = "db6c038f-98af-4570-ab60-24d71ebd0ae5"
 
+# Used only for demand calculation fallback from the main Elexon endpoint.
 INTERCONNECTOR_FUELS = {
     "INTELEC",
     "INTEW",
@@ -63,6 +67,30 @@ INTERCONNECTOR_FUELS = {
     "INTNSL",
     "INTVKL",
 }
+
+# Physical capacity of each interconnector in MW, matched by substring of the
+# interconnectorName field returned by the INTOUTHH endpoint.
+# Order matters: IFA2 must appear before IFA to avoid partial match.
+IC_NAME_CAPACITY = [
+    ("INTELEC", 1_000),  # ElecLink (France)
+    ("East-West", 500),  # East-West (Ireland)
+    ("IFA2", 1_000),  # IFA2 (France)
+    ("IFA", 2_000),  # IFA (France)
+    ("Moyle", 500),  # Moyle (N. Ireland)
+    ("BritNed", 1_000),  # BritNed (Netherlands)
+    ("Nemolink", 1_000),  # NemoLink (Belgium)
+    ("North Sea", 1_400),  # North Sea Link (Norway)
+    ("Viking", 1_400),  # Viking Link (Denmark)
+    ("Greenlink", 500),  # Greenlink (Ireland)
+]
+
+
+def ic_capacity(name):
+    """Return physical capacity in MW for an interconnector by name substring."""
+    for substr, cap in IC_NAME_CAPACITY:
+        if substr in name:
+            return cap
+    return 0
 
 
 # ── Data Fetching ─────────────────────────────────────────────────────────────
@@ -118,12 +146,39 @@ def fetch_neso(date_str, sp):
     }
 
 
+def fetch_interconnectors(date_str, sp):
+    """Fetch per-interconnector flows from the INTOUTHH endpoint.
+    Returns a list of records for the current settlement period, falling back
+    to the most recent available period if current SP isn't published yet.
+    Each record has 'interconnectorName' and 'generation' (MW, negative = exporting).
+    """
+    date_only = date_str[:10]
+    resp = requests.get(
+        ELEXON_IC_URL,
+        params={"settlementDateFrom": date_only, "settlementDateTo": date_only},
+        timeout=30,
+    )
+    resp.raise_for_status()
+    all_records = resp.json()["data"]
+
+    period_records = [r for r in all_records if r["settlementPeriod"] == sp]
+    if not period_records and all_records:
+        latest_sp = max(r["settlementPeriod"] for r in all_records)
+        period_records = [r for r in all_records if r["settlementPeriod"] == latest_sp]
+
+    if not period_records:
+        raise RuntimeError("No interconnector data available")
+    return period_records
+
+
 # ── Model ─────────────────────────────────────────────────────────────────────
 
 
-def actual_demand(elexon, neso):
+def actual_demand(elexon, neso, ic_records):
     """Calculate actual GB system demand in MW.
-    demand = domestic generation (incl. PS net) + net interconnectors + embedded gen"""
+    demand = domestic generation (incl. PS net) + net interconnectors + embedded gen.
+    Uses the INTOUTHH endpoint for interconnectors as the main Elexon endpoint
+    caps flows at zero and misses exports."""
     domestic = {
         "BIOMASS",
         "CCGT",
@@ -136,9 +191,10 @@ def actual_demand(elexon, neso):
         "PS",
         "WIND",
     }
+    net_ic = sum(r["generation"] for r in ic_records)
     return (
         sum(elexon.get(f, 0) for f in domestic)
-        + sum(elexon.get(f, 0) for f in INTERCONNECTOR_FUELS)
+        + net_ic
         + neso["embedded_wind_mw"]
         + neso["embedded_solar_mw"]
     )
@@ -161,6 +217,7 @@ def cp2030_generation(elexon, neso):
     trans_onshore_capacity = CURRENT_TOTAL_ONSHORE_WIND_CAPACITY_MW - emb_wind_capacity
     trans_onshore_output = onshore_lf * trans_onshore_capacity
     offshore_output = elexon.get("WIND", 0) - trans_onshore_output
+
     offshore_lf = (
         offshore_output / CURRENT_OFFSHORE_WIND_CAPACITY_MW
         if CURRENT_OFFSHORE_WIND_CAPACITY_MW
@@ -194,19 +251,22 @@ def cp2030_generation(elexon, neso):
     }
 
 
-def run_model(elexon, neso, state):
+def run_model(elexon, neso, ic_records, state):
     """Run one settlement period of the CP2030 model. Mutates and returns state."""
-    demand_actual = actual_demand(elexon, neso)
+    demand_actual = actual_demand(elexon, neso, ic_records)
     demand_cp2030 = demand_actual + DEMAND_UPLIFT_MW
 
     gen = cp2030_generation(elexon, neso)
     clean_gen = gen["wind_mw"] + gen["solar_mw"] + gen["nuclear_mw"] + gen["hydro_mw"]
 
-    # Available interconnector capacity in each direction based on current flows.
-    # Positive = import capacity, negative = export capacity.
-    ic_flows = {f: elexon.get(f, 0) for f in INTERCONNECTOR_FUELS}
-    max_import_mw =  sum(max(v, 0) for v in ic_flows.values())   # > 0
-    max_export_mw =  sum(min(v, 0) for v in ic_flows.values())   # < 0
+    # For each interconnector link currently flowing, use its full physical
+    # capacity in CP2030. A link at exactly 0 is assumed unavailable.
+    max_import_mw = sum(
+        ic_capacity(r["interconnectorName"]) for r in ic_records if r["generation"] > 0
+    )
+    max_export_mw = -sum(
+        ic_capacity(r["interconnectorName"]) for r in ic_records if r["generation"] < 0
+    )
 
     balance = clean_gen - demand_cp2030
 
@@ -240,13 +300,17 @@ def run_model(elexon, neso, state):
         ldes_soc += ldes_charge_energy_in * LDES_EFFICIENCY
         ldes_charge_mw = ldes_charge_energy_in * 2
         surplus -= ldes_charge_mw
-
+        print(f"Remaining surplus: {surplus} MW")
         # Export remaining surplus, capped at current export flows
-        export_mw = max(max_export_mw, -surplus)   # both negative; less negative = less export
+        export_mw = max(
+            max_export_mw, -surplus
+        )  # both negative; less negative = less export
+        print(f"Exporting {export_mw} MW (capped by max export of {max_export_mw} MW)")
         net_ic = round(export_mw)
-        surplus += export_mw   # export_mw is negative, reduces surplus
+        surplus += export_mw  # export_mw is negative, reduces surplus
 
         curtailment_mw = surplus
+        print(f"Curtailed amount: {curtailment_mw} MW")
 
     else:
         deficit = float(-balance)
@@ -355,8 +419,14 @@ def main():
         print(f"ERROR fetching NESO data: {e}")
         return
 
+    try:
+        ic_records = fetch_interconnectors(date_str, sp)
+    except Exception as e:
+        print(f"ERROR fetching interconnector data: {e}")
+        return
+
     state = load_state()
-    state = run_model(elexon, neso, state)
+    state = run_model(elexon, neso, ic_records, state)
     save_state(state)
     print(f"[{state['last_updated']}] Updated {STATE_FILE}")
 
