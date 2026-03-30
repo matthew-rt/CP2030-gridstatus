@@ -42,8 +42,9 @@ LDES_EFFICIENCY = 0.70  # One-way charge/discharge efficiency
 
 # ── Runtime Config ───────────────────────────────────────────────────────────
 # Override STATE_FILE with env var for local testing: STATE_FILE=/tmp/state.json python cp2030.py
-STATE_FILE = os.environ.get("STATE_FILE", "/var/www/cp2030/state.json")
-DB_FILE = os.environ.get("DB_FILE", "/var/www/cp2030/history.db")
+STATE_FILE   = os.environ.get("STATE_FILE",   "/var/www/cp2030/state.json")
+DB_FILE      = os.environ.get("DB_FILE",      "/var/www/cp2030/history.db")
+RECORDS_FILE = os.environ.get("RECORDS_FILE", "/var/www/cp2030/records.json")
 HISTORY_SIZE = 48  # 24 hours of half-hourly readings
 
 # ── API ──────────────────────────────────────────────────────────────────────
@@ -421,6 +422,103 @@ def log_entry(db_path, entry):
         """, entry)
 
 
+# ── Records & Derived Stats ───────────────────────────────────────────────────
+
+
+def hours_since_gas(db_path):
+    """Return hours since gas_mw was last > 0, or None if gas has never been used."""
+    if not os.path.exists(db_path):
+        return None
+    with sqlite3.connect(db_path) as con:
+        row = con.execute(
+            "SELECT timestamp FROM history WHERE gas_mw > 0 ORDER BY timestamp DESC LIMIT 1"
+        ).fetchone()
+    if not row:
+        return None
+    last_gas = datetime.fromisoformat(row[0])
+    return round((datetime.now(timezone.utc) - last_gas).total_seconds() / 3600, 1)
+
+
+def compute_records(db_path):
+    """Compute all-time records by scanning the history database."""
+    if not os.path.exists(db_path):
+        return None
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+
+        row = con.execute(
+            "SELECT timestamp, curtailment_mw FROM history ORDER BY curtailment_mw DESC LIMIT 1"
+        ).fetchone()
+        max_curtailment = (
+            {"value_mw": row["curtailment_mw"], "timestamp": row["timestamp"]} if row else None
+        )
+
+        row = con.execute("""
+            SELECT timestamp,
+                   ROUND(100.0 * (wind_mw + solar_mw + nuclear_mw + hydro_mw
+                                  + battery_discharge_mw + ldes_discharge_mw) / demand_mw, 1)
+                   AS clean_pct
+            FROM history WHERE demand_mw > 0
+            ORDER BY clean_pct DESC LIMIT 1
+        """).fetchone()
+        max_clean_pct = (
+            {"value_pct": row["clean_pct"], "timestamp": row["timestamp"]} if row else None
+        )
+
+        row = con.execute("""
+            SELECT timestamp, (wind_mw + solar_mw + hydro_mw) AS renewable_mw
+            FROM history ORDER BY renewable_mw DESC LIMIT 1
+        """).fetchone()
+        peak_renewables = (
+            {"value_mw": row["renewable_mw"], "timestamp": row["timestamp"]} if row else None
+        )
+
+        rows = con.execute(
+            "SELECT timestamp, gas_mw FROM history ORDER BY timestamp"
+        ).fetchall()
+
+    # Longest gas-free streak: gaps-and-islands in Python
+    best_hours, best_start, best_end = 0.0, None, None
+    streak_start = None
+    for row in rows:
+        ts = datetime.fromisoformat(row["timestamp"])
+        if row["gas_mw"] == 0:
+            if streak_start is None:
+                streak_start = ts
+            hours = (ts - streak_start).total_seconds() / 3600
+            if hours > best_hours:
+                best_hours, best_start, best_end = hours, streak_start, ts
+        else:
+            streak_start = None
+
+    longest_gas_free = (
+        {
+            "value_hours": round(best_hours, 1),
+            "start": best_start.isoformat(),
+            "end": best_end.isoformat(),
+        }
+        if best_start
+        else None
+    )
+
+    return {
+        "last_computed": datetime.now(timezone.utc).isoformat(),
+        "max_curtailment": max_curtailment,
+        "max_clean_pct": max_clean_pct,
+        "peak_renewables": peak_renewables,
+        "longest_gas_free_streak": longest_gas_free,
+    }
+
+
+def save_records(records, records_file):
+    """Write records.json atomically."""
+    os.makedirs(os.path.dirname(records_file), exist_ok=True)
+    tmp = records_file + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(records, f)
+    os.replace(tmp, records_file)
+
+
 # ── State I/O ─────────────────────────────────────────────────────────────────
 
 
@@ -473,9 +571,22 @@ def main():
 
     state = load_state()
     state = run_model(elexon, neso, ic_records, state)
-    save_state(state)
+
     init_db(DB_FILE)
     log_entry(DB_FILE, state["current"])
+
+    # Derived stats (require DB to be populated first)
+    c = state["current"]
+    clean_mw = (c["wind_mw"] + c["solar_mw"] + c["nuclear_mw"] + c["hydro_mw"]
+                + c["battery_discharge_mw"] + c["ldes_discharge_mw"])
+    state["clean_pct"] = round(100 * clean_mw / c["demand_mw"], 1) if c["demand_mw"] > 0 else 0
+    state["hours_since_gas"] = hours_since_gas(DB_FILE)
+
+    records = compute_records(DB_FILE)
+    if records:
+        save_records(records, RECORDS_FILE)
+
+    save_state(state)
     print(f"[{state['last_updated']}] Updated {STATE_FILE}")
 
 
