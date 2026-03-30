@@ -8,6 +8,7 @@ Runs every 30 minutes via cron and writes a JSON file served by Caddy.
 
 import json
 import os
+import sqlite3
 import requests
 from datetime import datetime, timezone
 from urllib import parse
@@ -42,6 +43,7 @@ LDES_EFFICIENCY = 0.70  # One-way charge/discharge efficiency
 # ── Runtime Config ───────────────────────────────────────────────────────────
 # Override STATE_FILE with env var for local testing: STATE_FILE=/tmp/state.json python cp2030.py
 STATE_FILE = os.environ.get("STATE_FILE", "/var/www/cp2030/state.json")
+DB_FILE = os.environ.get("DB_FILE", "/var/www/cp2030/history.db")
 HISTORY_SIZE = 48  # 24 hours of half-hourly readings
 
 # ── API ──────────────────────────────────────────────────────────────────────
@@ -300,17 +302,15 @@ def run_model(elexon, neso, ic_records, state):
         ldes_soc += ldes_charge_energy_in * LDES_EFFICIENCY
         ldes_charge_mw = ldes_charge_energy_in * 2
         surplus -= ldes_charge_mw
-        print(f"Remaining surplus: {surplus} MW")
+
         # Export remaining surplus, capped at current export flows
         export_mw = max(
             max_export_mw, -surplus
         )  # both negative; less negative = less export
-        print(f"Exporting {export_mw} MW (capped by max export of {max_export_mw} MW)")
         net_ic = round(export_mw)
         surplus += export_mw  # export_mw is negative, reduces surplus
 
         curtailment_mw = surplus
-        print(f"Curtailed amount: {curtailment_mw} MW")
 
     else:
         deficit = float(-balance)
@@ -375,6 +375,52 @@ def run_model(elexon, neso, ic_records, state):
     return state
 
 
+# ── Database Logging ──────────────────────────────────────────────────────────
+
+
+def init_db(db_path):
+    """Create the history table if it doesn't exist."""
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    with sqlite3.connect(db_path) as con:
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS history (
+                timestamp          TEXT PRIMARY KEY,
+                demand_mw          INTEGER,
+                actual_demand_mw   INTEGER,
+                wind_mw            INTEGER,
+                solar_mw           INTEGER,
+                nuclear_mw         INTEGER,
+                hydro_mw           INTEGER,
+                biomass_mw         INTEGER,
+                gas_mw             INTEGER,
+                battery_charge_mw  INTEGER,
+                battery_discharge_mw INTEGER,
+                ldes_charge_mw     INTEGER,
+                ldes_discharge_mw  INTEGER,
+                interconnector_mw  INTEGER,
+                curtailment_mw     INTEGER,
+                battery_soc_mwh    INTEGER,
+                ldes_soc_mwh       INTEGER
+            )
+        """)
+
+
+def log_entry(db_path, entry):
+    """Insert one settlement period row. Silently skips duplicate timestamps."""
+    with sqlite3.connect(db_path) as con:
+        con.execute("""
+            INSERT OR IGNORE INTO history VALUES (
+                :timestamp, :demand_mw, :actual_demand_mw,
+                :wind_mw, :solar_mw, :nuclear_mw, :hydro_mw,
+                :biomass_mw, :gas_mw,
+                :battery_charge_mw, :battery_discharge_mw,
+                :ldes_charge_mw, :ldes_discharge_mw,
+                :interconnector_mw, :curtailment_mw,
+                :battery_soc_mwh, :ldes_soc_mwh
+            )
+        """, entry)
+
+
 # ── State I/O ─────────────────────────────────────────────────────────────────
 
 
@@ -428,6 +474,8 @@ def main():
     state = load_state()
     state = run_model(elexon, neso, ic_records, state)
     save_state(state)
+    init_db(DB_FILE)
+    log_entry(DB_FILE, state["current"])
     print(f"[{state['last_updated']}] Updated {STATE_FILE}")
 
 
