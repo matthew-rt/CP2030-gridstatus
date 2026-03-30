@@ -380,7 +380,7 @@ def run_model(elexon, neso, ic_records, state):
 
 
 def init_db(db_path):
-    """Create the history table if it doesn't exist."""
+    """Create tables if they don't exist."""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     with sqlite3.connect(db_path) as con:
         con.execute("""
@@ -402,6 +402,19 @@ def init_db(db_path):
                 curtailment_mw     INTEGER,
                 battery_soc_mwh    INTEGER,
                 ldes_soc_mwh       INTEGER
+            )
+        """)
+        con.execute("""
+            CREATE TABLE IF NOT EXISTS records (
+                id                   INTEGER PRIMARY KEY CHECK (id = 1),
+                max_curtailment_mw   INTEGER,
+                max_curtailment_ts   TEXT,
+                peak_renewables_mw   INTEGER,
+                peak_renewables_ts   TEXT,
+                longest_streak_hours REAL,
+                longest_streak_start TEXT,
+                longest_streak_end   TEXT,
+                current_streak_start TEXT
             )
         """)
 
@@ -439,74 +452,67 @@ def hours_since_gas(db_path):
     return round((datetime.now(timezone.utc) - last_gas).total_seconds() / 3600, 1)
 
 
-def compute_records(db_path):
-    """Compute all-time records by scanning the history database."""
-    if not os.path.exists(db_path):
-        return None
+def update_records(db_path, entry):
+    """Update the records table incrementally from the current entry. O(1)."""
+    ts = entry["timestamp"]
+    curtailment = entry["curtailment_mw"]
+    renewables = entry["wind_mw"] + entry["solar_mw"] + entry["hydro_mw"]
+
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
+        rec = con.execute("SELECT * FROM records WHERE id = 1").fetchone()
 
-        row = con.execute(
-            "SELECT timestamp, curtailment_mw FROM history ORDER BY curtailment_mw DESC LIMIT 1"
-        ).fetchone()
-        max_curtailment = (
-            {"value_mw": row["curtailment_mw"], "timestamp": row["timestamp"]} if row else None
-        )
+        if rec is None:
+            con.execute("""
+                INSERT INTO records VALUES (1, ?, ?, ?, ?, 0, NULL, NULL, NULL)
+            """, (curtailment, ts, renewables, ts))
+            rec = con.execute("SELECT * FROM records WHERE id = 1").fetchone()
 
-        row = con.execute("""
-            SELECT timestamp,
-                   ROUND(100.0 * (wind_mw + solar_mw + nuclear_mw + hydro_mw
-                                  + battery_discharge_mw + ldes_discharge_mw) / demand_mw, 1)
-                   AS clean_pct
-            FROM history WHERE demand_mw > 0
-            ORDER BY clean_pct DESC LIMIT 1
-        """).fetchone()
-        max_clean_pct = (
-            {"value_pct": row["clean_pct"], "timestamp": row["timestamp"]} if row else None
-        )
+        rec = dict(rec)
 
-        row = con.execute("""
-            SELECT timestamp, (wind_mw + solar_mw + hydro_mw) AS renewable_mw
-            FROM history ORDER BY renewable_mw DESC LIMIT 1
-        """).fetchone()
-        peak_renewables = (
-            {"value_mw": row["renewable_mw"], "timestamp": row["timestamp"]} if row else None
-        )
+        if curtailment > (rec["max_curtailment_mw"] or 0):
+            rec["max_curtailment_mw"] = curtailment
+            rec["max_curtailment_ts"] = ts
 
-        rows = con.execute(
-            "SELECT timestamp, gas_mw FROM history ORDER BY timestamp"
-        ).fetchall()
+        if renewables > (rec["peak_renewables_mw"] or 0):
+            rec["peak_renewables_mw"] = renewables
+            rec["peak_renewables_ts"] = ts
 
-    # Longest gas-free streak: gaps-and-islands in Python
-    best_hours, best_start, best_end = 0.0, None, None
-    streak_start = None
-    for row in rows:
-        ts = datetime.fromisoformat(row["timestamp"])
-        if row["gas_mw"] == 0:
-            if streak_start is None:
-                streak_start = ts
-            hours = (ts - streak_start).total_seconds() / 3600
-            if hours > best_hours:
-                best_hours, best_start, best_end = hours, streak_start, ts
+        if entry["gas_mw"] == 0:
+            if rec["current_streak_start"] is None:
+                rec["current_streak_start"] = ts
+            streak_hours = (
+                datetime.fromisoformat(ts) - datetime.fromisoformat(rec["current_streak_start"])
+            ).total_seconds() / 3600
+            if streak_hours > (rec["longest_streak_hours"] or 0):
+                rec["longest_streak_hours"] = round(streak_hours, 1)
+                rec["longest_streak_start"] = rec["current_streak_start"]
+                rec["longest_streak_end"] = ts
         else:
-            streak_start = None
+            rec["current_streak_start"] = None
 
-    longest_gas_free = (
-        {
-            "value_hours": round(best_hours, 1),
-            "start": best_start.isoformat(),
-            "end": best_end.isoformat(),
-        }
-        if best_start
-        else None
-    )
+        con.execute("""
+            UPDATE records SET
+                max_curtailment_mw   = :max_curtailment_mw,
+                max_curtailment_ts   = :max_curtailment_ts,
+                peak_renewables_mw   = :peak_renewables_mw,
+                peak_renewables_ts   = :peak_renewables_ts,
+                longest_streak_hours = :longest_streak_hours,
+                longest_streak_start = :longest_streak_start,
+                longest_streak_end   = :longest_streak_end,
+                current_streak_start = :current_streak_start
+            WHERE id = 1
+        """, rec)
 
     return {
-        "last_computed": datetime.now(timezone.utc).isoformat(),
-        "max_curtailment": max_curtailment,
-        "max_clean_pct": max_clean_pct,
-        "peak_renewables": peak_renewables,
-        "longest_gas_free_streak": longest_gas_free,
+        "last_computed": ts,
+        "max_curtailment": {"value_mw": rec["max_curtailment_mw"], "timestamp": rec["max_curtailment_ts"]},
+        "peak_renewables": {"value_mw": rec["peak_renewables_mw"], "timestamp": rec["peak_renewables_ts"]},
+        "longest_gas_free_streak": {
+            "value_hours": rec["longest_streak_hours"],
+            "start": rec["longest_streak_start"],
+            "end": rec["longest_streak_end"],
+        } if rec["longest_streak_start"] else None,
     }
 
 
@@ -575,16 +581,10 @@ def main():
     init_db(DB_FILE)
     log_entry(DB_FILE, state["current"])
 
-    # Derived stats (require DB to be populated first)
-    c = state["current"]
-    clean_mw = (c["wind_mw"] + c["solar_mw"] + c["nuclear_mw"] + c["hydro_mw"]
-                + c["battery_discharge_mw"] + c["ldes_discharge_mw"])
-    state["clean_pct"] = round(100 * clean_mw / c["demand_mw"], 1) if c["demand_mw"] > 0 else 0
     state["hours_since_gas"] = hours_since_gas(DB_FILE)
 
-    records = compute_records(DB_FILE)
-    if records:
-        save_records(records, RECORDS_FILE)
+    records = update_records(DB_FILE, state["current"])
+    save_records(records, RECORDS_FILE)
 
     save_state(state)
     print(f"[{state['last_updated']}] Updated {STATE_FILE}")
