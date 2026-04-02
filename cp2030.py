@@ -9,42 +9,63 @@ Runs every 30 minutes via cron and writes a JSON file served by Caddy.
 import json
 import os
 import sqlite3
+import sys
 import requests
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
 from urllib import parse
 from zoneinfo import ZoneInfo
+
+# Load .env from the same directory (not committed to git)
+_env_path = Path(__file__).parent / ".env"
+if _env_path.exists():
+    for _line in _env_path.read_text().splitlines():
+        _line = _line.strip()
+        if _line and not _line.startswith("#") and "=" in _line:
+            _k, _v = _line.split("=", 1)
+            os.environ.setdefault(_k.strip(), _v.strip())
+
+sys.path.insert(0, os.path.dirname(__file__))
+from cp2030price import (
+    estimate_wholesale_price, load_entso_prices, INTERCONNECTORS,
+    CP2030_BIOMASS_MW, CP2030_GAS_MW,
+    CP2030_BATTERY_POWER_MW, CP2030_BATTERY_ENERGY_MWH,
+    CP2030_LDES_POWER_MW, CP2030_LDES_ENERGY_MWH,
+    BATTERY_EFFICIENCY, LDES_EFFICIENCY,
+)
 
 UK_TZ = ZoneInfo("Europe/London")
 
 # ── CP2030 Target Capacities ─────────────────────────────────────────────────
+# Storage, gas and biomass capacities live in cp2030price.py (imported above).
 CP2030_OFFSHORE_WIND_MW = 47_000
-CP2030_ONSHORE_WIND_MW = 28_000
-CP2030_SOLAR_MW = 46_000
-CP2030_NUCLEAR_MW = 3_800
-CP2030_BIOMASS_MW = 2_600
-CP2030_GAS_MW = 25_000
-CP2030_HYDRO_MW = 1_870
-CP2030_BATTERY_POWER_MW = 25_000
-CP2030_BATTERY_ENERGY_MWH = 50_000
-CP2030_LDES_POWER_MW = 5_000
-CP2030_LDES_ENERGY_MWH = 40_000
+CP2030_ONSHORE_WIND_MW  = 28_000
+CP2030_SOLAR_MW         = 46_000
+CP2030_NUCLEAR_MW       =  3_800
+CP2030_HYDRO_MW         =  1_870
 
 # ── Current (2026) Capacities ────────────────────────────────────────────────
 # Used to calculate load factors. Update periodically as new capacity is built.
 CURRENT_NUCLEAR_CAPACITY_MW = 4_685  # Heysham 1&2, Torness, Sizewell B
-CURRENT_OFFSHORE_WIND_CAPACITY_MW = 14279
-CURRENT_TOTAL_ONSHORE_WIND_CAPACITY_MW = 15270
+CURRENT_OFFSHORE_WIND_CAPACITY_MW = 14_279
+CURRENT_TOTAL_ONSHORE_WIND_CAPACITY_MW = 15_270
+
+# New-build offshore wind (capacity beyond today's fleet) is assumed to have a
+# 15% higher load factor than the current fleet, reflecting larger modern turbines.
+# The resulting load factor is capped at 1.0.
+NEW_OFFSHORE_LF_MULTIPLIER = 1.15
 
 # ── Model Parameters ─────────────────────────────────────────────────────────
 DEMAND_UPLIFT_MW = 4_000  # Additional CP2030 demand vs 2026 (electrification)
-BATTERY_EFFICIENCY = 0.95  # One-way charge/discharge efficiency
-LDES_EFFICIENCY = 0.70  # One-way charge/discharge efficiency
 
 # ── Runtime Config ───────────────────────────────────────────────────────────
-# Override STATE_FILE with env var for local testing: STATE_FILE=/tmp/state.json python cp2030.py
-STATE_FILE   = os.environ.get("STATE_FILE",   "/var/www/cp2030/state.json")
-DB_FILE      = os.environ.get("DB_FILE",      "/var/www/cp2030/history.db")
-RECORDS_FILE = os.environ.get("RECORDS_FILE", "/var/www/cp2030/records.json")
+# Override with env vars for local testing: STATE_FILE=/tmp/state.json python cp2030.py
+STATE_FILE        = os.environ.get("STATE_FILE",        "/var/www/cp2030/state.json")
+DB_FILE           = os.environ.get("DB_FILE",           "/var/www/cp2030/history.db")
+RECORDS_FILE      = os.environ.get("RECORDS_FILE",      "/var/www/cp2030/records.json")
+ENTSO_PRICES_FILE = os.environ.get("ENTSO_PRICES_FILE", "/var/www/cp2030/entso_prices.json")
+GAS_PRICE_FILE    = os.environ.get("GAS_PRICE_FILE",    "/var/www/cp2030/gas_price.json")
+RAW_DB_FILE       = os.environ.get("RAW_DB_FILE",       "/var/www/cp2030/raw_history.db")
 HISTORY_SIZE = 48  # 24 hours of half-hourly readings
 
 # ── API ──────────────────────────────────────────────────────────────────────
@@ -94,6 +115,23 @@ def ic_capacity(name):
         if substr in name:
             return cap
     return 0
+
+
+# ── Timestamp helpers ─────────────────────────────────────────────────────────
+
+
+def _round_timestamp(dt, floor=False):
+    """Round a UTC datetime to the nearest half hour.
+    If floor=True, truncate down (used for interactive runs targeting the current period).
+    """
+    secs = dt.minute * 60 + dt.second + dt.microsecond / 1_000_000
+    if floor or secs < 15 * 60:
+        new_min = 0 if dt.minute < 30 else 30
+        return dt.replace(minute=new_min, second=0, microsecond=0)
+    elif secs < 45 * 60:
+        return dt.replace(minute=30, second=0, microsecond=0)
+    else:
+        return dt.replace(minute=0, second=0, microsecond=0) + timedelta(hours=1)
 
 
 # ── Data Fetching ─────────────────────────────────────────────────────────────
@@ -227,8 +265,14 @@ def cp2030_generation(elexon, neso):
         else 0
     )
 
+    # New-build offshore capacity uses a higher load factor (modern larger turbines).
+    # Cap both at 1.0 to avoid physically impossible output.
+    new_offshore_mw = CP2030_OFFSHORE_WIND_MW - CURRENT_OFFSHORE_WIND_CAPACITY_MW
+    offshore_mw = (
+        offshore_lf * CURRENT_OFFSHORE_WIND_CAPACITY_MW
+        + min(offshore_lf * NEW_OFFSHORE_LF_MULTIPLIER, 1.0) * new_offshore_mw
+    )
     onshore_mw = onshore_lf * CP2030_ONSHORE_WIND_MW
-    offshore_mw = offshore_lf * CP2030_OFFSHORE_WIND_MW
     wind_mw = onshore_mw + offshore_mw
 
     # Solar: embedded only, scaled to CP2030 solar capacity
@@ -247,125 +291,117 @@ def cp2030_generation(elexon, neso):
     hydro_mw = elexon.get("NPSHYD", 0)
 
     return {
-        "wind_mw": round(wind_mw),
-        "solar_mw": round(solar_mw),
-        "nuclear_mw": round(nuclear_mw),
-        "hydro_mw": round(hydro_mw),
+        "offshore_mw": round(offshore_mw),
+        "onshore_mw":  round(onshore_mw),
+        "wind_mw":     round(wind_mw),
+        "solar_mw":    round(solar_mw),
+        "nuclear_mw":  round(nuclear_mw),
+        "hydro_mw":    round(hydro_mw),
     }
 
 
-def run_model(elexon, neso, ic_records, state):
+def load_gas_price():
+    """Load cached gas price from nightly_refresh. Returns p/therm or None."""
+    try:
+        with open(GAS_PRICE_FILE) as f:
+            return json.load(f)["p_per_therm"]
+    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+        return None
+
+
+def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None):
     """Run one settlement period of the CP2030 model. Mutates and returns state."""
     demand_actual = actual_demand(elexon, neso, ic_records)
     demand_cp2030 = demand_actual + DEMAND_UPLIFT_MW
 
     gen = cp2030_generation(elexon, neso)
-    clean_gen = gen["wind_mw"] + gen["solar_mw"] + gen["nuclear_mw"] + gen["hydro_mw"]
-
-    # For each interconnector link currently flowing, use its full physical
-    # capacity in CP2030. A link at exactly 0 is assumed unavailable.
-    max_import_mw = sum(
-        ic_capacity(r["interconnectorName"]) for r in ic_records if r["generation"] > 0
-    )
-    max_export_mw = -sum(
-        ic_capacity(r["interconnectorName"]) for r in ic_records if r["generation"] < 0
-    )
-
-    balance = clean_gen - demand_cp2030
 
     battery_soc = state["battery_soc_mwh"]
     ldes_soc = state["ldes_soc_mwh"]
 
-    battery_charge_mw = battery_discharge_mw = 0
-    ldes_charge_mw = ldes_discharge_mw = 0
-    biomass_mw = gas_mw = curtailment_mw = 0
-    net_ic = 0
+    # ── Price-based dispatch ──────────────────────────────────────────────────
+    price_kwargs = {}
+    gas_p = load_gas_price()
+    if gas_p is not None:
+        price_kwargs["gas_p"] = gas_p
 
-    if balance >= 0:
-        surplus = float(balance)
-
-        # Charge batteries from surplus
-        charge_power = min(CP2030_BATTERY_POWER_MW, surplus)
-        charge_energy_in = min(
-            charge_power * 0.5,
-            (CP2030_BATTERY_ENERGY_MWH - battery_soc) / BATTERY_EFFICIENCY,
+    wholesale_price, marginal_tech, _, ic_modes, storage_flows, dispatch = (
+        estimate_wholesale_price(
+            offshore_mw=gen["offshore_mw"],
+            onshore_mw=gen["onshore_mw"],
+            solar_mw=gen["solar_mw"],
+            nuclear_mw=gen["nuclear_mw"],
+            hydro_mw=gen["hydro_mw"],
+            demand_mw=demand_cp2030,
+            battery_soc_mwh=battery_soc,
+            ldes_soc_mwh=ldes_soc,
+            foreign_prices=load_entso_prices(ENTSO_PRICES_FILE),
+            **price_kwargs,
         )
-        battery_soc += charge_energy_in * BATTERY_EFFICIENCY
-        battery_charge_mw = charge_energy_in * 2
-        surplus -= battery_charge_mw
+    )
 
-        # Charge LDES from remaining surplus
-        ldes_charge_power = min(CP2030_LDES_POWER_MW, surplus)
-        ldes_charge_energy_in = min(
-            ldes_charge_power * 0.5,
-            (CP2030_LDES_ENERGY_MWH - ldes_soc) / LDES_EFFICIENCY,
-        )
-        ldes_soc += ldes_charge_energy_in * LDES_EFFICIENCY
-        ldes_charge_mw = ldes_charge_energy_in * 2
-        surplus -= ldes_charge_mw
+    # ── Per-technology dispatch and curtailment ───────────────────────────────
+    offshore_dispatched = round(dispatch.get("offshore_wind_ro", 0) + dispatch.get("offshore_wind_cfd", 0))
+    onshore_dispatched  = round(dispatch.get("onshore_wind_ro",  0) + dispatch.get("onshore_wind_cfd",  0))
+    solar_dispatched    = round(dispatch.get("solar_legacy",     0) + dispatch.get("solar_cfd",         0))
+    nuclear_dispatched  = round(dispatch.get("nuclear",          0))
+    hydro_dispatched    = round(dispatch.get("hydro",            0))
+    biomass_mw          = round(dispatch.get("biomass",          0))
+    gas_mw              = round(dispatch.get("gas_ccgt", 0) + dispatch.get("gas_ocgt", 0))
+    battery_discharge_mw = round(dispatch.get("battery_discharge", 0))
+    ldes_discharge_mw    = round(dispatch.get("ldes_discharge",    0))
 
-        # Export remaining surplus, capped at current export flows
-        export_mw = max(
-            max_export_mw, -surplus
-        )  # both negative; less negative = less export
-        net_ic = round(export_mw)
-        surplus += export_mw  # export_mw is negative, reduces surplus
+    offshore_curtailed  = round(max(0, gen["offshore_mw"] - offshore_dispatched))
+    onshore_curtailed   = round(max(0, gen["onshore_mw"]  - onshore_dispatched))
+    solar_curtailed     = round(max(0, gen["solar_mw"]    - solar_dispatched))
+    nuclear_curtailed   = round(max(0, gen["nuclear_mw"]  - nuclear_dispatched))
+    hydro_curtailed     = round(max(0, gen["hydro_mw"]    - hydro_dispatched))
 
-        curtailment_mw = surplus
+    ic_import_mw = sum(dispatch.get(f"ic_{name}", 0) for name, *_ in INTERCONNECTORS)
+    ic_export_mw = sum(cap for name, cap, *_ in INTERCONNECTORS if ic_modes.get(name) == "export")
+    net_ic = round(ic_import_mw - ic_export_mw)
 
-    else:
-        deficit = float(-balance)
+    # ── Update storage SoC ────────────────────────────────────────────────────
+    battery_charge_mw = storage_flows["battery_charge_mw"]
+    ldes_charge_mw    = storage_flows["ldes_charge_mw"]
 
-        # Import up to available interconnector capacity
-        net_ic = round(min(max_import_mw, deficit))
-        deficit -= net_ic
+    battery_soc -= battery_discharge_mw * 0.5 / BATTERY_EFFICIENCY
+    battery_soc += battery_charge_mw    * 0.5 * BATTERY_EFFICIENCY
+    battery_soc  = max(0.0, min(CP2030_BATTERY_ENERGY_MWH, battery_soc))
 
-        # Discharge batteries
-        max_bat_power = min(
-            battery_soc * 2 * BATTERY_EFFICIENCY, CP2030_BATTERY_POWER_MW
-        )
-        bat_discharge_power = min(max_bat_power, deficit)
-        bat_energy_used = bat_discharge_power * 0.5 / BATTERY_EFFICIENCY
-        battery_soc -= bat_energy_used
-        battery_discharge_mw = bat_discharge_power
-        deficit -= battery_discharge_mw
-
-        # Discharge LDES
-        max_ldes_power = min(ldes_soc * 2 * LDES_EFFICIENCY, CP2030_LDES_POWER_MW)
-        ldes_discharge_power = min(max_ldes_power, deficit)
-        ldes_energy_used = ldes_discharge_power * 0.5 / LDES_EFFICIENCY
-        ldes_soc -= ldes_energy_used
-        ldes_discharge_mw = ldes_discharge_power
-        deficit -= ldes_discharge_mw
-
-        # Biomass dispatched first
-        biomass_mw = min(CP2030_BIOMASS_MW, deficit)
-        deficit -= biomass_mw
-
-        # Unabated gas last resort
-        gas_mw = min(CP2030_GAS_MW, deficit)
+    ldes_soc -= ldes_discharge_mw * 0.5 / LDES_EFFICIENCY
+    ldes_soc += ldes_charge_mw    * 0.5 * LDES_EFFICIENCY
+    ldes_soc  = max(0.0, min(CP2030_LDES_ENERGY_MWH, ldes_soc))
 
     state["battery_soc_mwh"] = round(battery_soc)
-    state["ldes_soc_mwh"] = round(ldes_soc)
+    state["ldes_soc_mwh"]    = round(ldes_soc)
 
     entry = {
-        "timestamp": datetime.now(timezone.utc).isoformat(),
-        "demand_mw": round(demand_cp2030),
-        "actual_demand_mw": round(demand_actual),
-        "wind_mw": gen["wind_mw"],
-        "solar_mw": gen["solar_mw"],
-        "nuclear_mw": gen["nuclear_mw"],
-        "hydro_mw": gen["hydro_mw"],
-        "biomass_mw": round(biomass_mw),
-        "gas_mw": round(gas_mw),
-        "battery_charge_mw": round(battery_charge_mw),
-        "battery_discharge_mw": round(battery_discharge_mw),
-        "ldes_charge_mw": round(ldes_charge_mw),
-        "ldes_discharge_mw": round(ldes_discharge_mw),
-        "interconnector_mw": net_ic,
-        "curtailment_mw": round(curtailment_mw),
-        "battery_soc_mwh": round(battery_soc),
-        "ldes_soc_mwh": round(ldes_soc),
+        "timestamp":             (timestamp if timestamp is not None
+                                  else _round_timestamp(datetime.now(timezone.utc), floor=interactive)).isoformat(),
+        "demand_mw":             round(demand_cp2030),
+        "actual_demand_mw":      round(demand_actual),
+        "offshore_dispatched_mw": offshore_dispatched,
+        "onshore_dispatched_mw":  onshore_dispatched,
+        "solar_dispatched_mw":    solar_dispatched,
+        "nuclear_dispatched_mw":  nuclear_dispatched,
+        "hydro_dispatched_mw":    hydro_dispatched,
+        "biomass_mw":             biomass_mw,
+        "gas_mw":                 gas_mw,
+        "offshore_curtailed_mw":  offshore_curtailed,
+        "onshore_curtailed_mw":   onshore_curtailed,
+        "solar_curtailed_mw":     solar_curtailed,
+        "nuclear_curtailed_mw":   nuclear_curtailed,
+        "hydro_curtailed_mw":     hydro_curtailed,
+        "battery_charge_mw":      round(battery_charge_mw),
+        "battery_discharge_mw":   battery_discharge_mw,
+        "ldes_charge_mw":         round(ldes_charge_mw),
+        "ldes_discharge_mw":      ldes_discharge_mw,
+        "interconnector_mw":      net_ic,
+        "battery_soc_mwh":        round(battery_soc),
+        "ldes_soc_mwh":           round(ldes_soc),
+        "wholesale_price_gbp":    wholesale_price,
+        "marginal_tech":          marginal_tech,
     }
 
     history = state.get("history", [])
@@ -385,23 +421,30 @@ def init_db(db_path):
     with sqlite3.connect(db_path) as con:
         con.execute("""
             CREATE TABLE IF NOT EXISTS history (
-                timestamp          TEXT PRIMARY KEY,
-                demand_mw          INTEGER,
-                actual_demand_mw   INTEGER,
-                wind_mw            INTEGER,
-                solar_mw           INTEGER,
-                nuclear_mw         INTEGER,
-                hydro_mw           INTEGER,
-                biomass_mw         INTEGER,
-                gas_mw             INTEGER,
-                battery_charge_mw  INTEGER,
-                battery_discharge_mw INTEGER,
-                ldes_charge_mw     INTEGER,
-                ldes_discharge_mw  INTEGER,
-                interconnector_mw  INTEGER,
-                curtailment_mw     INTEGER,
-                battery_soc_mwh    INTEGER,
-                ldes_soc_mwh       INTEGER
+                timestamp              TEXT PRIMARY KEY,
+                demand_mw              INTEGER,
+                actual_demand_mw       INTEGER,
+                offshore_dispatched_mw INTEGER,
+                onshore_dispatched_mw  INTEGER,
+                solar_dispatched_mw    INTEGER,
+                nuclear_dispatched_mw  INTEGER,
+                hydro_dispatched_mw    INTEGER,
+                biomass_mw             INTEGER,
+                gas_mw                 INTEGER,
+                offshore_curtailed_mw  INTEGER,
+                onshore_curtailed_mw   INTEGER,
+                solar_curtailed_mw     INTEGER,
+                nuclear_curtailed_mw   INTEGER,
+                hydro_curtailed_mw     INTEGER,
+                battery_charge_mw      INTEGER,
+                battery_discharge_mw   INTEGER,
+                ldes_charge_mw         INTEGER,
+                ldes_discharge_mw      INTEGER,
+                interconnector_mw      INTEGER,
+                battery_soc_mwh        INTEGER,
+                ldes_soc_mwh           INTEGER,
+                wholesale_price_gbp    REAL,
+                marginal_tech          TEXT
             )
         """)
         con.execute("""
@@ -419,18 +462,26 @@ def init_db(db_path):
         """)
 
 
-def log_entry(db_path, entry):
-    """Insert one settlement period row. Silently skips duplicate timestamps."""
+def log_entry(db_path, entry, overwrite=False):
+    """Insert one settlement period row.
+    overwrite=True replaces an existing row with the same timestamp (interactive use).
+    overwrite=False silently skips duplicates (cron use).
+    """
+    verb = "INSERT OR REPLACE" if overwrite else "INSERT OR IGNORE"
     with sqlite3.connect(db_path) as con:
-        con.execute("""
-            INSERT OR IGNORE INTO history VALUES (
+        con.execute(f"""
+            {verb} INTO history VALUES (
                 :timestamp, :demand_mw, :actual_demand_mw,
-                :wind_mw, :solar_mw, :nuclear_mw, :hydro_mw,
+                :offshore_dispatched_mw, :onshore_dispatched_mw,
+                :solar_dispatched_mw, :nuclear_dispatched_mw, :hydro_dispatched_mw,
                 :biomass_mw, :gas_mw,
+                :offshore_curtailed_mw, :onshore_curtailed_mw,
+                :solar_curtailed_mw, :nuclear_curtailed_mw, :hydro_curtailed_mw,
                 :battery_charge_mw, :battery_discharge_mw,
                 :ldes_charge_mw, :ldes_discharge_mw,
-                :interconnector_mw, :curtailment_mw,
-                :battery_soc_mwh, :ldes_soc_mwh
+                :interconnector_mw,
+                :battery_soc_mwh, :ldes_soc_mwh,
+                :wholesale_price_gbp, :marginal_tech
             )
         """, entry)
 
@@ -455,8 +506,15 @@ def hours_since_gas(db_path):
 def update_records(db_path, entry):
     """Update the records table incrementally from the current entry. O(1)."""
     ts = entry["timestamp"]
-    curtailment = entry["curtailment_mw"]
-    renewables = entry["wind_mw"] + entry["solar_mw"] + entry["hydro_mw"]
+    curtailment = (
+        entry["offshore_curtailed_mw"] + entry["onshore_curtailed_mw"]
+        + entry["solar_curtailed_mw"] + entry["nuclear_curtailed_mw"]
+        + entry["hydro_curtailed_mw"]
+    )
+    renewables = (
+        entry["offshore_dispatched_mw"] + entry["onshore_dispatched_mw"]
+        + entry["solar_dispatched_mw"] + entry["hydro_dispatched_mw"]
+    )
 
     with sqlite3.connect(db_path) as con:
         con.row_factory = sqlite3.Row
@@ -525,6 +583,61 @@ def save_records(records, records_file):
     os.replace(tmp, records_file)
 
 
+# ── Raw data store (for future re-simulation) ─────────────────────────────────
+
+
+def init_raw_db(db_path):
+    """Create raw history tables if they don't exist."""
+    os.makedirs(os.path.dirname(db_path), exist_ok=True)
+    with sqlite3.connect(db_path) as con:
+        con.executescript("""
+            CREATE TABLE IF NOT EXISTS raw_generation (
+                settlement_date   TEXT,
+                settlement_period INTEGER,
+                fuel_type         TEXT,
+                generation_mw     REAL,
+                PRIMARY KEY (settlement_date, settlement_period, fuel_type)
+            );
+            CREATE TABLE IF NOT EXISTS raw_embedded (
+                settlement_date          TEXT,
+                settlement_period        INTEGER,
+                embedded_wind_mw         REAL,
+                embedded_wind_capacity_mw REAL,
+                embedded_solar_mw        REAL,
+                embedded_solar_capacity_mw REAL,
+                PRIMARY KEY (settlement_date, settlement_period)
+            );
+            CREATE TABLE IF NOT EXISTS raw_interconnectors (
+                settlement_date   TEXT,
+                settlement_period INTEGER,
+                ic_name           TEXT,
+                generation_mw     REAL,
+                PRIMARY KEY (settlement_date, settlement_period, ic_name)
+            );
+        """)
+
+
+def save_raw_data(db_path, date_str, sp, elexon, neso, ic_records):
+    """Persist one settlement period of raw API data for future re-simulation."""
+    with sqlite3.connect(db_path) as con:
+        for fuel_type, mw in elexon.items():
+            con.execute(
+                "INSERT OR REPLACE INTO raw_generation VALUES (?,?,?,?)",
+                (date_str, sp, fuel_type, float(mw)),
+            )
+        con.execute(
+            "INSERT OR REPLACE INTO raw_embedded VALUES (?,?,?,?,?,?)",
+            (date_str, sp,
+             neso["embedded_wind_mw"], neso["embedded_wind_capacity_mw"],
+             neso["embedded_solar_mw"], neso["embedded_solar_capacity_mw"]),
+        )
+        for r in ic_records:
+            con.execute(
+                "INSERT OR REPLACE INTO raw_interconnectors VALUES (?,?,?,?)",
+                (date_str, sp, r["interconnectorName"], float(r["generation"])),
+            )
+
+
 # ── State I/O ─────────────────────────────────────────────────────────────────
 
 
@@ -575,11 +688,15 @@ def main():
         print(f"ERROR fetching interconnector data: {e}")
         return
 
+    interactive = sys.stdin.isatty()
+
     state = load_state()
-    state = run_model(elexon, neso, ic_records, state)
+    state = run_model(elexon, neso, ic_records, state, interactive=interactive)
 
     init_db(DB_FILE)
-    log_entry(DB_FILE, state["current"])
+    init_raw_db(RAW_DB_FILE)
+    log_entry(DB_FILE, state["current"], overwrite=interactive)
+    save_raw_data(RAW_DB_FILE, date_str[:10], sp, elexon, neso, ic_records)
 
     state["hours_since_gas"] = hours_since_gas(DB_FILE)
 
