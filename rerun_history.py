@@ -87,36 +87,52 @@ def diagnose_raw_db(raw_db):
 
 
 def load_raw_periods(raw_db):
-    """Return all (settlement_date, settlement_period) pairs that have generation
-    and embedded data. Interconnectors are optional — if missing, demand will be
-    computed without net IC flows (small approximation).
+    """Return all (settlement_date, settlement_period) pairs that have generation data.
+    Embedded and interconnector data are optional — fallbacks are applied in load_raw_sp.
     """
     with sqlite3.connect(raw_db) as con:
         rows = con.execute("""
-            SELECT g.settlement_date, g.settlement_period
-            FROM (SELECT DISTINCT settlement_date, settlement_period FROM raw_generation) g
-            JOIN (SELECT DISTINCT settlement_date, settlement_period FROM raw_embedded) e
-              ON g.settlement_date = e.settlement_date
-             AND g.settlement_period = e.settlement_period
-            ORDER BY g.settlement_date, g.settlement_period
+            SELECT DISTINCT settlement_date, settlement_period
+            FROM raw_generation
+            ORDER BY settlement_date, settlement_period
         """).fetchall()
     return rows
 
 
 def load_raw_sp(raw_db, settlement_date, sp):
-    """Load one settlement period of raw data and return (elexon, neso, ic_records)."""
+    """Load one settlement period of raw data and return (elexon, neso, ic_records).
+
+    Embedded data may be sparse (NESO API has a short rolling window). If the exact
+    date is missing, falls back to the nearest available record with the same SP number
+    (same time of day) to preserve the diurnal solar/wind pattern.
+
+    Interconnector data falls back to empty list if missing (small demand error).
+    """
     with sqlite3.connect(raw_db) as con:
         gen_rows = con.execute(
             "SELECT fuel_type, generation_mw FROM raw_generation "
             "WHERE settlement_date=? AND settlement_period=?",
             (settlement_date, sp),
         ).fetchall()
+
+        # Exact embedded match first
         emb_row = con.execute(
             "SELECT embedded_wind_mw, embedded_wind_capacity_mw, "
             "       embedded_solar_mw, embedded_solar_capacity_mw "
             "FROM raw_embedded WHERE settlement_date=? AND settlement_period=?",
             (settlement_date, sp),
         ).fetchone()
+
+        # Fallback: nearest date with the same settlement period
+        if emb_row is None:
+            emb_row = con.execute(
+                "SELECT embedded_wind_mw, embedded_wind_capacity_mw, "
+                "       embedded_solar_mw, embedded_solar_capacity_mw "
+                "FROM raw_embedded WHERE settlement_period=? "
+                "ORDER BY ABS(JULIANDAY(settlement_date) - JULIANDAY(?)) LIMIT 1",
+                (sp, settlement_date),
+            ).fetchone()
+
         ic_rows = con.execute(
             "SELECT ic_name, generation_mw FROM raw_interconnectors "
             "WHERE settlement_date=? AND settlement_period=?",
@@ -124,12 +140,21 @@ def load_raw_sp(raw_db, settlement_date, sp):
         ).fetchall()
 
     elexon = {fuel: mw for fuel, mw in gen_rows}
-    neso = {
-        "embedded_wind_mw":          emb_row[0],
-        "embedded_wind_capacity_mw":  emb_row[1],
-        "embedded_solar_mw":         emb_row[2],
-        "embedded_solar_capacity_mw": emb_row[3],
-    }
+
+    if emb_row is not None:
+        neso = {
+            "embedded_wind_mw":           emb_row[0],
+            "embedded_wind_capacity_mw":  emb_row[1],
+            "embedded_solar_mw":          emb_row[2],
+            "embedded_solar_capacity_mw": emb_row[3],
+        }
+    else:
+        # No embedded data at all — use zeros (model will still run)
+        neso = {
+            "embedded_wind_mw": 0, "embedded_wind_capacity_mw": 1,
+            "embedded_solar_mw": 0, "embedded_solar_capacity_mw": 1,
+        }
+
     ic_records = [{"interconnectorName": name, "generation": mw} for name, mw in ic_rows]
     return elexon, neso, ic_records
 

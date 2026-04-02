@@ -57,17 +57,20 @@ CP2030_LDES_ENERGY_MWH    = 40_000
 BATTERY_EFFICIENCY        = 0.95     # one-way charge/discharge
 LDES_EFFICIENCY           = 0.70     # one-way charge/discharge
 
-# Storage bids are derived dynamically from CCGT SRMC inside estimate_wholesale_price()
-# to ensure storage always clears below gas regardless of the prevailing gas price.
-# These margins set how far below CCGT SRMC each storage type discharges.
-# Batteries discharge first (larger margin → lower bid), LDES second (smaller margin).
-BATTERY_BELOW_CCGT = 8    # £/MWh below CCGT SRMC for battery discharge bid
-LDES_BELOW_CCGT    = 3    # £/MWh below CCGT SRMC for LDES discharge bid
-# Charge prices are derived from discharge bids via round-trip efficiency:
-#   max_charge_price = discharge_bid * efficiency²
+# Storage discharge bids are derived inside estimate_wholesale_price() to guarantee
+# batteries and LDES always clear *before* every gas and biomass band, regardless of the
+# prevailing gas price.  The logic is:
+#   1. Compute the floor of gas bands:    ccgt_srmc − GAS_CCGT_SIGMA × 3
+#   2. Compute the floor of biomass bands: BIOMASS_BID[0] − BIOMASS_BID[1] × 3  (= 60 £/MWh)
+#   3. dispatch_floor = min(gas_floor, biomass_floor)
+#   4. bat_discharge_bid  = dispatch_floor − BATTERY_BELOW_FLOOR     (battery first)
+#      ldes_discharge_bid = dispatch_floor − BATTERY_BELOW_FLOOR + 2 (LDES just above battery)
+# Charge prices follow from round-trip efficiency so batteries don't buy at gas prices:
+#   max_charge_price = discharge_bid × efficiency²
+BATTERY_BELOW_FLOOR = 5   # £/MWh below the cheapest gas/biomass band
 
-BATTERY_DISCHARGE_SIGMA = 3
-LDES_DISCHARGE_SIGMA    = 4
+BATTERY_DISCHARGE_SIGMA = 2
+LDES_DISCHARGE_SIGMA    = 3
 
 # ── Interconnectors ───────────────────────────────────────────────────────────
 # (name, capacity_mw, default_foreign_price_gbp, threshold_gbp)
@@ -478,12 +481,16 @@ def estimate_wholesale_price(
         ic_flows:       Dict of {name: 'import'|'export'|'none'}
         storage_flows:  Dict with battery/ldes charge and discharge MW
     """
-    # ── Storage bids derived from current CCGT SRMC ───────────────────────────
-    # Discharge bids are set below CCGT SRMC so storage always clears before gas.
-    # Max charge prices follow from discharge_bid × round-trip efficiency.
-    ccgt = ccgt_srmc(gas_p, carbon)
-    bat_discharge_bid      = ccgt - BATTERY_BELOW_CCGT
-    ldes_discharge_bid     = ccgt - LDES_BELOW_CCGT
+    # ── Storage bids: always below every gas and biomass band ────────────────
+    # Gas band floor varies with gas price; biomass floor is fixed at ~60 £/MWh.
+    # Using the lower of the two guarantees storage clears before all thermal bands.
+    ccgt          = ccgt_srmc(gas_p, carbon)
+    gas_floor     = ccgt - GAS_CCGT_SIGMA * 3.0
+    biomass_floor = BIOMASS_BID[0] - BIOMASS_BID[1] * 3.0   # 90 − 30 = 60 £/MWh
+    dispatch_floor = min(gas_floor, biomass_floor)
+
+    bat_discharge_bid      = dispatch_floor - BATTERY_BELOW_FLOOR
+    ldes_discharge_bid     = dispatch_floor - BATTERY_BELOW_FLOOR + 2  # LDES just above battery
     max_bat_charge_price   = bat_discharge_bid  * BATTERY_EFFICIENCY ** 2
     max_ldes_charge_price  = ldes_discharge_bid * LDES_EFFICIENCY    ** 2
 
