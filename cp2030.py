@@ -300,13 +300,43 @@ def cp2030_generation(elexon, neso):
     }
 
 
-def load_gas_price():
-    """Load cached gas price from nightly_refresh. Returns p/therm or None."""
+def load_gas_price(reference_date=None):
+    """Return gas price in p/therm for a given date, or None if unavailable.
+
+    reference_date: a date object or YYYY-MM-DD string. Defaults to today.
+    Looks up the exact date first; falls back to the most recent earlier entry.
+    Accepts the legacy single-value format {"p_per_therm": X} for compatibility.
+    """
     try:
         with open(GAS_PRICE_FILE) as f:
-            return json.load(f)["p_per_therm"]
-    except (FileNotFoundError, KeyError, json.JSONDecodeError):
+            data = json.load(f)
+    except (FileNotFoundError, json.JSONDecodeError):
         return None
+
+    # Legacy format written by old nightly_refresh
+    if isinstance(data, dict) and set(data.keys()) == {"p_per_therm"}:
+        return data["p_per_therm"]
+
+    if not data:
+        return None
+
+    if reference_date is None:
+        ref = datetime.now(timezone.utc).date().isoformat()
+    elif hasattr(reference_date, "isoformat"):
+        ref = reference_date.isoformat()
+    else:
+        ref = str(reference_date)
+
+    if ref in data:
+        return data[ref]
+
+    # Most recent date on or before reference date
+    candidates = [d for d in data if d <= ref]
+    if candidates:
+        return data[max(candidates)]
+
+    # Reference date is before all data — use earliest available
+    return data[min(data.keys())]
 
 
 def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None):
@@ -319,9 +349,13 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     battery_soc = state["battery_soc_mwh"]
     ldes_soc = state["ldes_soc_mwh"]
 
+    # Compute timestamp now so we can use it for both the entry and price lookup.
+    ts = (timestamp if timestamp is not None
+          else _round_timestamp(datetime.now(timezone.utc), floor=interactive))
+
     # ── Price-based dispatch ──────────────────────────────────────────────────
     price_kwargs = {}
-    gas_p = load_gas_price()
+    gas_p = load_gas_price(reference_date=ts.date())
     if gas_p is not None:
         price_kwargs["gas_p"] = gas_p
 
@@ -335,7 +369,7 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
             demand_mw=demand_cp2030,
             battery_soc_mwh=battery_soc,
             ldes_soc_mwh=ldes_soc,
-            foreign_prices=load_entso_prices(ENTSO_PRICES_FILE),
+            foreign_prices=load_entso_prices(ENTSO_PRICES_FILE, reference_dt=ts),
             **price_kwargs,
         )
     )
@@ -377,8 +411,7 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     state["ldes_soc_mwh"]    = round(ldes_soc)
 
     entry = {
-        "timestamp":             (timestamp if timestamp is not None
-                                  else _round_timestamp(datetime.now(timezone.utc), floor=interactive)).isoformat(),
+        "timestamp":             ts.isoformat(),
         "demand_mw":             round(demand_cp2030),
         "actual_demand_mw":      round(demand_actual),
         "offshore_dispatched_mw": offshore_dispatched,

@@ -12,14 +12,15 @@ Usage:
 
 API notes
 ---------
-Generation outturn (by fuel type, half-hourly):
-    GET /generation/outturn?settlementDateFrom=...&settlementDateTo=...
-    Returns {"data": [{settlementDate, settlementPeriod, fuelType, generation, ...}]}
-
-    If this endpoint doesn't work on your Elexon API version, try FUELINST instead:
+Generation (by fuel type): Elexon FUELINST dataset (5-minute intervals).
     GET /datasets/FUELINST?publishDateTimeFrom=...&publishDateTimeTo=...
-    Returns 5-minute readings; the script then takes the last reading per SP.
-    See fetch_generation_day_fuelinst() below.
+    Last reading per settlement period is used — same snapshot the live cron captures.
+
+Interconnectors: needed for accurate actual demand (domestic gen + net IC + embedded).
+    The CP2030 dispatch model is price-based and ignores these, but the demand
+    calculation uses them to determine how much the UK actually consumed.
+
+Embedded wind/solar: NESO datastore, bulk SQL query.
 """
 
 import os
@@ -42,9 +43,8 @@ DELAY       = 0.4   # seconds between API calls (be polite)
 
 UK_TZ = ZoneInfo("Europe/London")
 
-ELEXON_GEN_URL  = "https://data.elexon.co.uk/bmrs/api/v1/generation/outturn"
-ELEXON_IC_URL   = "https://data.elexon.co.uk/bmrs/api/v1/generation/outturn/interconnectors"
 ELEXON_FUEL_URL = "https://data.elexon.co.uk/bmrs/api/v1/datasets/FUELINST"
+ELEXON_IC_URL   = "https://data.elexon.co.uk/bmrs/api/v1/generation/outturn/interconnectors"
 NESO_URL        = "https://api.neso.energy/api/3/action/datastore_search_sql"
 NESO_DATASET    = "db6c038f-98af-4570-ab60-24d71ebd0ae5"
 
@@ -98,42 +98,13 @@ def stored_embedded_dates(db_path):
     return {row[0] for row in rows}
 
 
-# ── Elexon generation (half-hourly outturn) ───────────────────────────────────
+# ── Elexon generation (FUELINST 5-min data → grouped by settlement period) ────
 
 
 def fetch_generation_day(d):
-    """Fetch half-hourly generation outturn for one day via the outturn endpoint.
-    Returns {sp: {fuel_type: generation_mw}} (sp is an int, 1-based).
-    """
-    date_str = d.isoformat()
-    resp = requests.get(
-        ELEXON_GEN_URL,
-        params={"settlementDateFrom": date_str, "settlementDateTo": date_str,
-                "format": "json"},
-        timeout=60,
-    )
-    resp.raise_for_status()
-    body = resp.json()
-
-    # Response may be a list or wrapped in {"data": [...]}
-    records = body if isinstance(body, list) else body.get("data", [])
-    if not records:
-        raise ValueError(f"No generation data returned for {date_str}")
-
-    result = defaultdict(dict)
-    for r in records:
-        sp   = r.get("settlementPeriod") or r.get("settlement_period")
-        fuel = r.get("fuelType") or r.get("fuel_type")
-        mw   = r.get("generation") or r.get("currentUsage") or r.get("quantity") or 0.0
-        if sp and fuel:
-            result[int(sp)][fuel] = float(mw)
-
-    return dict(result)
-
-
-def fetch_generation_day_fuelinst(d):
-    """Alternative: fetch via FUELINST (5-min data), take last reading per SP.
-    Use this if fetch_generation_day() returns empty results.
+    """Fetch FUELINST (5-min data) for one day, grouped by settlement period.
+    Takes the last reading per (SP, fuel type) — same snapshot the live cron captures.
+    Returns {sp: {fuel_type: generation_mw}}.
     """
     from_dt = f"{d.isoformat()}T00:00:00Z"
     to_dt   = f"{(d + timedelta(days=1)).isoformat()}T00:00:00Z"
@@ -308,33 +279,18 @@ def main():
 
     failed_gen = []
     for i, d in enumerate(dates_needed):
-        print(f"  [{i+1}/{len(dates_needed)}] {d.isoformat()} generation...", end=" ", flush=True)
+        print(f"  [{i+1}/{len(dates_needed)}] {d.isoformat()}...", end=" ", flush=True)
         try:
             gen = fetch_generation_day(d)
-            if not gen:
-                raise ValueError("empty response, trying FUELINST fallback")
-        except Exception as e1:
-            print(f"outturn endpoint failed ({e1}), trying FUELINST...", end=" ", flush=True)
-            time.sleep(DELAY)
-            try:
-                gen = fetch_generation_day_fuelinst(d)
-            except Exception as e2:
-                print(f"FAILED: {e2}")
-                failed_gen.append(d)
-                continue
+            save_generation(RAW_DB_FILE, d, gen)
 
-        save_generation(RAW_DB_FILE, d, gen)
-        print(f"OK ({len(gen)} SPs)")
-        time.sleep(DELAY)
-
-        # Interconnectors for the same day
-        print(f"  [{i+1}/{len(dates_needed)}] {d.isoformat()} interconnectors...", end=" ", flush=True)
-        try:
             ic = fetch_interconnectors_day(d)
             save_interconnectors(RAW_DB_FILE, d, ic)
-            print(f"OK ({sum(len(v) for v in ic.values())} flows)")
+
+            print(f"OK ({len(gen)} SPs)")
         except Exception as e:
             print(f"FAILED: {e}")
+            failed_gen.append(d)
         time.sleep(DELAY)
 
     # ── NESO embedded ────────────────────────────────────────────────────────

@@ -233,10 +233,13 @@ def fetch_entso_prices(api_key=None, eur_to_gbp=EUR_TO_GBP):
     return result
 
 
-def load_entso_prices(prices_file):
+def load_entso_prices(prices_file, reference_dt=None):
     """
     Load cached ENTSO-E prices and return {ic_name: price_gbp} for the
-    current settlement period, picking the nearest hourly value per area.
+    given time, picking the nearest hourly value per area.
+
+    reference_dt: datetime to look up prices for (UTC). Defaults to now.
+                  Pass the historical settlement period timestamp for reruns.
 
     Falls back to the hardcoded INTERCONNECTORS defaults for any area where
     the cache is missing or stale.
@@ -249,13 +252,13 @@ def load_entso_prices(prices_file):
     except (FileNotFoundError, json.JSONDecodeError):
         return defaults
 
-    now_utc = datetime.now(timezone.utc)
+    ref = reference_dt if reference_dt is not None else datetime.now(timezone.utc)
 
     def _nearest_price(area_data):
         best_price, best_diff = None, float("inf")
         for ts_str, price in area_data.items():
             ts   = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-            diff = abs((now_utc - ts).total_seconds())
+            diff = abs((ref - ts).total_seconds())
             if diff < best_diff:
                 best_diff, best_price = diff, price
         return best_price

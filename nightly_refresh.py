@@ -64,8 +64,21 @@ print(f"Cached ENTSO-E prices ({'live' if api_key else 'defaults'}) to {ENTSO_PR
 
 gas_api_key = os.environ.get("OIL_PRICE_API_KEY")
 gas_price_p_per_therm = fetch_gas_price(gas_api_key)
+
+# Append today's price to the time-series; preserve all existing entries.
+try:
+    with open(GAS_PRICE_FILE) as f:
+        gas_prices = json.load(f)
+    if not isinstance(gas_prices, dict) or set(gas_prices.keys()) == {"p_per_therm"}:
+        gas_prices = {}
+except (FileNotFoundError, json.JSONDecodeError):
+    gas_prices = {}
+
+from datetime import date as _date
+gas_prices[_date.today().isoformat()] = gas_price_p_per_therm
+
 tmp = GAS_PRICE_FILE + ".tmp"
 with open(tmp, "w") as f:
-    json.dump({"p_per_therm": gas_price_p_per_therm}, f)
+    json.dump(dict(sorted(gas_prices.items())), f)
 os.replace(tmp, GAS_PRICE_FILE)
-print(f"Cached gas price ({'live' if gas_api_key else 'default'}) {gas_price_p_per_therm}p/therm to {GAS_PRICE_FILE}")
+print(f"Appended gas price ({'live' if gas_api_key else 'default'}) {gas_price_p_per_therm}p/therm for {_date.today()} to {GAS_PRICE_FILE}")
