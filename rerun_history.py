@@ -75,9 +75,21 @@ def sp_to_utc(settlement_date_str, sp):
     return uk_dt.astimezone(timezone.utc)
 
 
+def diagnose_raw_db(raw_db):
+    """Print row counts per table so missing data is obvious."""
+    with sqlite3.connect(raw_db) as con:
+        for table in ("raw_generation", "raw_embedded", "raw_interconnectors"):
+            n = con.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0]
+            dates = con.execute(
+                f"SELECT COUNT(DISTINCT settlement_date) FROM {table}"
+            ).fetchone()[0]
+            print(f"  {table}: {n} rows across {dates} dates")
+
+
 def load_raw_periods(raw_db):
-    """Return all (settlement_date, settlement_period) pairs that have a full
-    complement of raw data (generation + embedded + ≥1 interconnector).
+    """Return all (settlement_date, settlement_period) pairs that have generation
+    and embedded data. Interconnectors are optional — if missing, demand will be
+    computed without net IC flows (small approximation).
     """
     with sqlite3.connect(raw_db) as con:
         rows = con.execute("""
@@ -86,9 +98,6 @@ def load_raw_periods(raw_db):
             JOIN (SELECT DISTINCT settlement_date, settlement_period FROM raw_embedded) e
               ON g.settlement_date = e.settlement_date
              AND g.settlement_period = e.settlement_period
-            JOIN (SELECT DISTINCT settlement_date, settlement_period FROM raw_interconnectors) i
-              ON g.settlement_date = i.settlement_date
-             AND g.settlement_period = i.settlement_period
             ORDER BY g.settlement_date, g.settlement_period
         """).fetchall()
     return rows
@@ -142,9 +151,13 @@ def main():
         print("Run generate_dummy_entso_prices.py first.")
         sys.exit(1)
 
+    print("Raw DB contents:")
+    diagnose_raw_db(RAW_DB_FILE)
+
     periods = load_raw_periods(RAW_DB_FILE)
     if not periods:
-        print("ERROR: raw DB contains no complete settlement periods.")
+        print("ERROR: raw DB has no periods with both generation and embedded data.")
+        print("Re-run download_raw_history.py and check for errors.")
         sys.exit(1)
 
     first_sp = f"{periods[0][0]}  SP{periods[0][1]}"
