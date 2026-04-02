@@ -40,7 +40,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from cp2030price import ENTSO_E_URL, ENTSO_E_AREAS, fetch_eur_to_gbp
 
 DEFAULT_OUT = os.environ.get("ENTSO_PRICES_FILE", "/var/www/cp2030/entso_prices.json")
-RATE_LIMIT_PAUSE = 2.0  # seconds between requests to avoid 429s
+RATE_LIMIT_PAUSE = 5  # seconds between requests to avoid 429s
 
 
 def _fetch_area_prices_eur_window(area_code, api_key, period_start_str, period_end_str):
