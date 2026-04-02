@@ -22,9 +22,10 @@ import argparse
 import xml.etree.ElementTree as ET
 import re
 from datetime import datetime, timezone, timedelta
+from pathlib import Path
 
 # ── Load .env ─────────────────────────────────────────────────────────────────
-_env_path = os.path.expanduser("~/.env")
+_env_path = Path(__file__).parent / ".env"
 if os.path.exists(_env_path):
     with open(_env_path) as _f:
         for _line in _f:
@@ -39,7 +40,7 @@ sys.path.insert(0, os.path.dirname(__file__))
 from cp2030price import ENTSO_E_URL, ENTSO_E_AREAS, fetch_eur_to_gbp
 
 DEFAULT_OUT = os.environ.get("ENTSO_PRICES_FILE", "/var/www/cp2030/entso_prices.json")
-RATE_LIMIT_PAUSE = 2.0   # seconds between requests to avoid 429s
+RATE_LIMIT_PAUSE = 2.0  # seconds between requests to avoid 429s
 
 
 def _fetch_area_prices_eur_window(area_code, api_key, period_start_str, period_end_str):
@@ -52,11 +53,11 @@ def _fetch_area_prices_eur_window(area_code, api_key, period_start_str, period_e
         ENTSO_E_URL,
         params={
             "securityToken": api_key,
-            "documentType":  "A44",
-            "in_Domain":     area_code,
-            "out_Domain":    area_code,
-            "periodStart":   period_start_str,
-            "periodEnd":     period_end_str,
+            "documentType": "A44",
+            "in_Domain": area_code,
+            "out_Domain": area_code,
+            "periodStart": period_start_str,
+            "periodEnd": period_end_str,
         },
         timeout=30,
     )
@@ -64,8 +65,8 @@ def _fetch_area_prices_eur_window(area_code, api_key, period_start_str, period_e
 
     root = ET.fromstring(resp.text)
     ns_uri = root.tag.split("}")[0].lstrip("{") if "}" in root.tag else ""
-    ns     = {"ns": ns_uri} if ns_uri else {}
-    pf     = "ns:" if ns_uri else ""
+    ns = {"ns": ns_uri} if ns_uri else {}
+    pf = "ns:" if ns_uri else ""
 
     prices = {}
     for ts in root.findall(f"{pf}TimeSeries", ns):
@@ -85,13 +86,15 @@ def _fetch_area_prices_eur_window(area_code, api_key, period_start_str, period_e
                 start_el.text.replace("Z", "+00:00")
             )
             for point in period.findall(f"{pf}Point", ns):
-                pos_el   = point.find(f"{pf}position",     ns)
+                pos_el = point.find(f"{pf}position", ns)
                 price_el = point.find(f"{pf}price.amount", ns)
                 if pos_el is not None and price_el is not None:
                     slot_dt = period_start_dt + timedelta(
                         minutes=interval_minutes * (int(pos_el.text) - 1)
                     )
-                    prices[slot_dt.strftime("%Y-%m-%dT%H:%M:%SZ")] = float(price_el.text)
+                    prices[slot_dt.strftime("%Y-%m-%dT%H:%M:%SZ")] = float(
+                        price_el.text
+                    )
     return prices
 
 
@@ -116,7 +119,7 @@ def fetch_history(start_dt, end_dt, api_key, eur_to_gbp):
         cursor = next_month
 
     total = len(windows) * len(ENTSO_E_AREAS)
-    done  = 0
+    done = 0
 
     for area_key, area_code in ENTSO_E_AREAS.items():
         for w_start, w_end in windows:
@@ -127,22 +130,32 @@ def fetch_history(start_dt, end_dt, api_key, eur_to_gbp):
                 for ts, p in prices_eur.items():
                     result[area_key][ts] = round(p * eur_to_gbp, 2)
                 done += 1
-                print(f"  [{done}/{total}] {area_key} {w_start.strftime('%Y-%m')}:"
-                      f" {len(prices_eur)} points")
+                print(
+                    f"  [{done}/{total}] {area_key} {w_start.strftime('%Y-%m')}:"
+                    f" {len(prices_eur)} points"
+                )
             except Exception as e:
                 done += 1
-                print(f"  [{done}/{total}] {area_key} {w_start.strftime('%Y-%m')}: ERROR — {e}")
+                print(
+                    f"  [{done}/{total}] {area_key} {w_start.strftime('%Y-%m')}: ERROR — {e}"
+                )
             time.sleep(RATE_LIMIT_PAUSE)
 
     return result
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Backfill ENTSO-E day-ahead price history.")
-    parser.add_argument("--start", default="2026-01-01",
-                        help="Start date (YYYY-MM-DD, UTC). Default: 2026-01-01")
-    parser.add_argument("--out",   default=DEFAULT_OUT,
-                        help=f"Output JSON file. Default: {DEFAULT_OUT}")
+    parser = argparse.ArgumentParser(
+        description="Backfill ENTSO-E day-ahead price history."
+    )
+    parser.add_argument(
+        "--start",
+        default="2026-01-01",
+        help="Start date (YYYY-MM-DD, UTC). Default: 2026-01-01",
+    )
+    parser.add_argument(
+        "--out", default=DEFAULT_OUT, help=f"Output JSON file. Default: {DEFAULT_OUT}"
+    )
     args = parser.parse_args()
 
     api_key = os.environ.get("ENTSO_E_API_KEY")
@@ -151,7 +164,7 @@ def main():
         sys.exit(1)
 
     start_dt = datetime.fromisoformat(args.start).replace(tzinfo=timezone.utc)
-    end_dt   = datetime.now(timezone.utc) + timedelta(days=1)
+    end_dt = datetime.now(timezone.utc) + timedelta(days=1)
 
     print(f"Fetching EUR/GBP exchange rate...")
     eur_to_gbp = fetch_eur_to_gbp()
@@ -187,9 +200,11 @@ def main():
     for area_key, prices in existing.items():
         if prices:
             times = sorted(prices)
-            print(f"  {area_key}: {len(prices)} points, "
-                  f"£{min(prices.values()):.1f}–£{max(prices.values()):.1f}/MWh, "
-                  f"latest {times[-1]}")
+            print(
+                f"  {area_key}: {len(prices)} points, "
+                f"£{min(prices.values()):.1f}–£{max(prices.values()):.1f}/MWh, "
+                f"latest {times[-1]}"
+            )
 
 
 if __name__ == "__main__":
