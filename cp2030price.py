@@ -127,7 +127,7 @@ ENTSO_E_AREAS = {
     "NO2":  "10YNO-2--------T",   # Norway NO2 (Nord Pool)
     "DK1":  "10YDK-1--------W",   # Denmark DK1 (Nord Pool)
     "DE":   "10Y1001A1001A82H",   # Germany/Luxembourg (EPEX DE-LU)
-    "IE":   "10YIE-1001A00010",   # Ireland (I-SEM) — verify when key available
+    "IE":   "10Y1001A1001A59C",    # Ireland (I-SEM) SEM bidding zone
 }
 
 # Maps each interconnector to its foreign bidding zone
@@ -190,8 +190,14 @@ def _fetch_area_prices_eur(area_code, api_key):
             if start_el is None:
                 continue
             resolution_el = period.find(f"{pf}resolution", ns)
-            if resolution_el is None or resolution_el.text != "PT60M":
-                continue   # skip non-hourly periods
+            if resolution_el is None:
+                continue
+            # Parse ISO 8601 duration: PT15M → 15, PT30M → 30, PT60M → 60
+            import re as _re
+            _rm = _re.match(r"PT(\d+)M", resolution_el.text or "")
+            if not _rm:
+                continue
+            interval_minutes = int(_rm.group(1))
 
             period_start_dt = datetime.fromisoformat(
                 start_el.text.replace("Z", "+00:00")
@@ -200,7 +206,7 @@ def _fetch_area_prices_eur(area_code, api_key):
                 pos_el   = point.find(f"{pf}position",    ns)
                 price_el = point.find(f"{pf}price.amount", ns)
                 if pos_el is not None and price_el is not None:
-                    slot_dt = period_start_dt + timedelta(hours=int(pos_el.text) - 1)
+                    slot_dt = period_start_dt + timedelta(minutes=interval_minutes * (int(pos_el.text) - 1))
                     prices[slot_dt.strftime("%Y-%m-%dT%H:%M:%SZ")] = float(price_el.text)
 
     return prices   # {utc_iso: price_eur}

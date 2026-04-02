@@ -27,7 +27,7 @@ if _env_path.exists():
 
 sys.path.insert(0, os.path.dirname(__file__))
 from cp2030price import (
-    estimate_wholesale_price, load_entso_prices, INTERCONNECTORS,
+    estimate_wholesale_price, load_entso_prices, INTERCONNECTORS, IC_AREA,
     CP2030_BIOMASS_MW, CP2030_GAS_MW,
     CP2030_BATTERY_POWER_MW, CP2030_BATTERY_ENERGY_MWH,
     CP2030_LDES_POWER_MW, CP2030_LDES_ENERGY_MWH,
@@ -395,6 +395,15 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     ic_export_mw = sum(ic_exports.values())
     net_ic = round(ic_import_mw - ic_export_mw)
 
+    # Per-country net flows (positive = import into UK, negative = export from UK)
+    ic_by_country = {}
+    for name, *_ in INTERCONNECTORS:
+        zone = IC_AREA.get(name, name)
+        imp = dispatch.get(f"ic_{name}", 0)
+        exp = ic_exports.get(name, 0)
+        ic_by_country[zone] = ic_by_country.get(zone, 0) + round(imp - exp)
+    ic_flows_json = json.dumps(ic_by_country)
+
     # ── Update storage SoC ────────────────────────────────────────────────────
     battery_charge_mw = storage_flows["battery_charge_mw"]
     ldes_charge_mw    = storage_flows["ldes_charge_mw"]
@@ -431,6 +440,7 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
         "ldes_charge_mw":         round(ldes_charge_mw),
         "ldes_discharge_mw":      ldes_discharge_mw,
         "interconnector_mw":      net_ic,
+        "ic_flows_json":          ic_flows_json,
         "battery_soc_mwh":        round(battery_soc),
         "ldes_soc_mwh":           round(ldes_soc),
         "wholesale_price_gbp":    wholesale_price,
@@ -474,6 +484,7 @@ def init_db(db_path):
                 ldes_charge_mw         INTEGER,
                 ldes_discharge_mw      INTEGER,
                 interconnector_mw      INTEGER,
+                ic_flows_json          TEXT,
                 battery_soc_mwh        INTEGER,
                 ldes_soc_mwh           INTEGER,
                 wholesale_price_gbp    REAL,
@@ -512,7 +523,7 @@ def log_entry(db_path, entry, overwrite=False):
                 :solar_curtailed_mw, :nuclear_curtailed_mw, :hydro_curtailed_mw,
                 :battery_charge_mw, :battery_discharge_mw,
                 :ldes_charge_mw, :ldes_discharge_mw,
-                :interconnector_mw,
+                :interconnector_mw, :ic_flows_json,
                 :battery_soc_mwh, :ldes_soc_mwh,
                 :wholesale_price_gbp, :marginal_tech
             )
