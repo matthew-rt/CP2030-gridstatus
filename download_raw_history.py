@@ -46,7 +46,11 @@ UK_TZ = ZoneInfo("Europe/London")
 ELEXON_FUEL_URL = "https://data.elexon.co.uk/bmrs/api/v1/datasets/FUELINST"
 ELEXON_IC_URL   = "https://data.elexon.co.uk/bmrs/api/v1/generation/outturn/interconnectors"
 NESO_URL        = "https://api.neso.energy/api/3/action/datastore_search_sql"
-NESO_DATASET    = "db6c038f-98af-4570-ab60-24d71ebd0ae5"
+NESO_DATASET    = "f93d1835-75bc-43e5-84ad-12472b180a98"  # historical 30-min embedded gen
+
+# Fixed capacity estimates (actual values ~Jan 2026; no capacity fields in this dataset)
+EMBEDDED_WIND_CAPACITY_MW  = 6606
+EMBEDDED_SOLAR_CAPACITY_MW = 22205
 
 # ── DB init ───────────────────────────────────────────────────────────────────
 
@@ -188,9 +192,13 @@ def fetch_interconnectors_day(d):
 
 def fetch_neso_bulk(start_date):
     """Fetch all NESO embedded wind/solar records from start_date onwards.
-    Returns a list of raw records (one per settlement period).
-    Paginates automatically if the API returns fewer records than expected.
+
+    Uses dataset f93d1835 which has 30-minute UTC DATETIME, WIND_EMB, and SOLAR
+    fields going back to 2009. Paginates automatically.
+
+    Returns a list of dicts with keys: DATETIME, WIND_EMB, SOLAR.
     """
+    # Dataset DATETIME column is UTC ISO strings like '2026-01-01T00:00:00'
     start_str = f"{start_date.isoformat()}T00:00:00"
     all_records = []
     offset = 0
@@ -198,9 +206,9 @@ def fetch_neso_bulk(start_date):
 
     while True:
         sql = (
-            f'SELECT * FROM "{NESO_DATASET}" '
-            f'WHERE "SETTLEMENT_DATE" >= \'{start_str}\' '
-            f'ORDER BY "SETTLEMENT_DATE", "SETTLEMENT_PERIOD" '
+            f'SELECT "DATETIME", "WIND_EMB", "SOLAR" FROM "{NESO_DATASET}" '
+            f'WHERE "DATETIME" >= \'{start_str}\' '
+            f'ORDER BY "DATETIME" '
             f'LIMIT {page_size} OFFSET {offset}'
         )
         resp = requests.get(
@@ -215,6 +223,18 @@ def fetch_neso_bulk(start_date):
         time.sleep(DELAY)
 
     return all_records
+
+
+def _utc_to_settlement(dt_utc):
+    """Convert a UTC datetime to (settlement_date_str, settlement_period).
+
+    The NESO dataset DATETIME marks the *start* of each 30-minute slot in UTC.
+    We convert to UK local time (handles GMT/BST) to derive settlement date and
+    settlement period (1-based half-hour index within the UK calendar day).
+    """
+    uk = dt_utc.astimezone(UK_TZ)
+    sp = uk.hour * 2 + uk.minute // 30 + 1
+    return uk.date().isoformat(), sp
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
@@ -243,17 +263,34 @@ def save_interconnectors(db_path, d, sp_data):
 
 
 def save_embedded(db_path, records):
+    """Convert NESO f93d1835 records to settlement_date/period and insert into DB.
+
+    Each record has a UTC DATETIME string, WIND_EMB (MW) and SOLAR (MW).
+    Capacity fields use the fixed estimates defined at the top of this file.
+    """
     with sqlite3.connect(db_path) as con:
         for r in records:
-            date_str = r["SETTLEMENT_DATE"][:10]
-            sp = int(r["SETTLEMENT_PERIOD"])
+            raw_dt = r.get("DATETIME", "")
+            if not raw_dt:
+                continue
+            try:
+                dt_utc = datetime.fromisoformat(raw_dt.replace("Z", "+00:00"))
+                if dt_utc.tzinfo is None:
+                    # Dataset datetimes are UTC but stored without tz suffix
+                    dt_utc = dt_utc.replace(tzinfo=timezone.utc)
+            except ValueError:
+                continue
+
+            date_str, sp = _utc_to_settlement(dt_utc)
+
+            wind_mw  = float(r.get("WIND_EMB") or 0.0)
+            solar_mw = float(r.get("SOLAR")    or 0.0)
+
             con.execute(
                 "INSERT OR REPLACE INTO raw_embedded VALUES (?,?,?,?,?,?)",
                 (date_str, sp,
-                 r["EMBEDDED_WIND_FORECAST"],
-                 r["EMBEDDED_WIND_CAPACITY"],
-                 r["EMBEDDED_SOLAR_FORECAST"],
-                 r["EMBEDDED_SOLAR_CAPACITY"]),
+                 wind_mw,  EMBEDDED_WIND_CAPACITY_MW,
+                 solar_mw, EMBEDDED_SOLAR_CAPACITY_MW),
             )
 
 
