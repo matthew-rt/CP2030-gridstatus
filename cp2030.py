@@ -27,11 +27,18 @@ if _env_path.exists():
 
 sys.path.insert(0, os.path.dirname(__file__))
 from cp2030price import (
-    estimate_wholesale_price, load_entso_prices, INTERCONNECTORS, IC_AREA,
-    CP2030_BIOMASS_MW, CP2030_GAS_MW,
-    CP2030_BATTERY_POWER_MW, CP2030_BATTERY_ENERGY_MWH,
-    CP2030_LDES_POWER_MW, CP2030_LDES_ENERGY_MWH,
-    BATTERY_EFFICIENCY, LDES_EFFICIENCY,
+    estimate_wholesale_price,
+    load_entso_prices,
+    INTERCONNECTORS,
+    IC_AREA,
+    CP2030_BIOMASS_MW,
+    CP2030_GAS_MW,
+    CP2030_BATTERY_POWER_MW,
+    CP2030_BATTERY_ENERGY_MWH,
+    CP2030_LDES_POWER_MW,
+    CP2030_LDES_ENERGY_MWH,
+    BATTERY_EFFICIENCY,
+    LDES_EFFICIENCY,
 )
 
 UK_TZ = ZoneInfo("Europe/London")
@@ -39,10 +46,10 @@ UK_TZ = ZoneInfo("Europe/London")
 # ── CP2030 Target Capacities ─────────────────────────────────────────────────
 # Storage, gas and biomass capacities live in cp2030price.py (imported above).
 CP2030_OFFSHORE_WIND_MW = 47_000
-CP2030_ONSHORE_WIND_MW  = 28_000
-CP2030_SOLAR_MW         = 46_000
-CP2030_NUCLEAR_MW       =  3_800
-CP2030_HYDRO_MW         =  1_870
+CP2030_ONSHORE_WIND_MW = 28_000
+CP2030_SOLAR_MW = 46_000
+CP2030_NUCLEAR_MW = 3_800
+CP2030_HYDRO_MW = 1_870
 
 # ── Current (2026) Capacities ────────────────────────────────────────────────
 # Used to calculate load factors. Update periodically as new capacity is built.
@@ -60,12 +67,14 @@ DEMAND_UPLIFT_MW = 4_000  # Additional CP2030 demand vs 2026 (electrification)
 
 # ── Runtime Config ───────────────────────────────────────────────────────────
 # Override with env vars for local testing: STATE_FILE=/tmp/state.json python cp2030.py
-STATE_FILE        = os.environ.get("STATE_FILE",        "/var/www/cp2030/state.json")
-DB_FILE           = os.environ.get("DB_FILE",           "/var/www/cp2030/history.db")
-RECORDS_FILE      = os.environ.get("RECORDS_FILE",      "/var/www/cp2030/records.json")
-ENTSO_PRICES_FILE = os.environ.get("ENTSO_PRICES_FILE", "/var/www/cp2030/entso_prices.json")
-GAS_PRICE_FILE    = os.environ.get("GAS_PRICE_FILE",    "/var/www/cp2030/gas_price.json")
-RAW_DB_FILE       = os.environ.get("RAW_DB_FILE",       "/var/www/cp2030/raw_history.db")
+STATE_FILE = os.environ.get("STATE_FILE", "/var/www/cp2030/state.json")
+DB_FILE = os.environ.get("DB_FILE", "/var/www/cp2030/history.db")
+RECORDS_FILE = os.environ.get("RECORDS_FILE", "/var/www/cp2030/records.json")
+ENTSO_PRICES_FILE = os.environ.get(
+    "ENTSO_PRICES_FILE", "/var/www/cp2030/entso_prices.json"
+)
+GAS_PRICE_FILE = os.environ.get("GAS_PRICE_FILE", "/var/www/cp2030/gas_price.json")
+RAW_DB_FILE = os.environ.get("RAW_DB_FILE", "/var/www/cp2030/raw_history.db")
 HISTORY_SIZE = 48  # 24 hours of half-hourly readings
 
 # ── API ──────────────────────────────────────────────────────────────────────
@@ -156,8 +165,17 @@ def fetch_elexon():
 
 
 def _neso_query(sql):
-    resp = requests.get(NESO_URL, params=parse.urlencode({"sql": sql}), timeout=30)
-    resp.raise_for_status()
+    for attempt in range(3):
+        try:
+            resp = requests.get(
+                NESO_URL, params=parse.urlencode({"sql": sql}), timeout=30
+            )
+            resp.raise_for_status()
+            return resp.json()["result"]["records"]
+        except Exception as e:
+            if attempt == 2:
+                raise
+            continue
     return resp.json()["result"]["records"]
 
 
@@ -292,11 +310,11 @@ def cp2030_generation(elexon, neso):
 
     return {
         "offshore_mw": round(offshore_mw),
-        "onshore_mw":  round(onshore_mw),
-        "wind_mw":     round(wind_mw),
-        "solar_mw":    round(solar_mw),
-        "nuclear_mw":  round(nuclear_mw),
-        "hydro_mw":    round(hydro_mw),
+        "onshore_mw": round(onshore_mw),
+        "wind_mw": round(wind_mw),
+        "solar_mw": round(solar_mw),
+        "nuclear_mw": round(nuclear_mw),
+        "hydro_mw": round(hydro_mw),
     }
 
 
@@ -350,8 +368,11 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     ldes_soc = state["ldes_soc_mwh"]
 
     # Compute timestamp now so we can use it for both the entry and price lookup.
-    ts = (timestamp if timestamp is not None
-          else _round_timestamp(datetime.now(timezone.utc), floor=interactive))
+    ts = (
+        timestamp
+        if timestamp is not None
+        else _round_timestamp(datetime.now(timezone.utc), floor=interactive)
+    )
 
     # ── Price-based dispatch ──────────────────────────────────────────────────
     price_kwargs = {}
@@ -375,21 +396,27 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     )
 
     # ── Per-technology dispatch and curtailment ───────────────────────────────
-    offshore_dispatched = round(dispatch.get("offshore_wind_ro", 0) + dispatch.get("offshore_wind_cfd", 0))
-    onshore_dispatched  = round(dispatch.get("onshore_wind_ro",  0) + dispatch.get("onshore_wind_cfd",  0))
-    solar_dispatched    = round(dispatch.get("solar_legacy",     0) + dispatch.get("solar_cfd",         0))
-    nuclear_dispatched  = round(dispatch.get("nuclear",          0))
-    hydro_dispatched    = round(dispatch.get("hydro",            0))
-    biomass_mw          = round(dispatch.get("biomass",          0))
-    gas_mw              = round(dispatch.get("gas_ccgt", 0) + dispatch.get("gas_ocgt", 0))
+    offshore_dispatched = round(
+        dispatch.get("offshore_wind_ro", 0) + dispatch.get("offshore_wind_cfd", 0)
+    )
+    onshore_dispatched = round(
+        dispatch.get("onshore_wind_ro", 0) + dispatch.get("onshore_wind_cfd", 0)
+    )
+    solar_dispatched = round(
+        dispatch.get("solar_legacy", 0) + dispatch.get("solar_cfd", 0)
+    )
+    nuclear_dispatched = round(dispatch.get("nuclear", 0))
+    hydro_dispatched = round(dispatch.get("hydro", 0))
+    biomass_mw = round(dispatch.get("biomass", 0))
+    gas_mw = round(dispatch.get("gas_ccgt", 0) + dispatch.get("gas_ocgt", 0))
     battery_discharge_mw = round(dispatch.get("battery_discharge", 0))
-    ldes_discharge_mw    = round(dispatch.get("ldes_discharge",    0))
+    ldes_discharge_mw = round(dispatch.get("ldes_discharge", 0))
 
-    offshore_curtailed  = round(max(0, gen["offshore_mw"] - offshore_dispatched))
-    onshore_curtailed   = round(max(0, gen["onshore_mw"]  - onshore_dispatched))
-    solar_curtailed     = round(max(0, gen["solar_mw"]    - solar_dispatched))
-    nuclear_curtailed   = round(max(0, gen["nuclear_mw"]  - nuclear_dispatched))
-    hydro_curtailed     = round(max(0, gen["hydro_mw"]    - hydro_dispatched))
+    offshore_curtailed = round(max(0, gen["offshore_mw"] - offshore_dispatched))
+    onshore_curtailed = round(max(0, gen["onshore_mw"] - onshore_dispatched))
+    solar_curtailed = round(max(0, gen["solar_mw"] - solar_dispatched))
+    nuclear_curtailed = round(max(0, gen["nuclear_mw"] - nuclear_dispatched))
+    hydro_curtailed = round(max(0, gen["hydro_mw"] - hydro_dispatched))
 
     ic_import_mw = sum(dispatch.get(f"ic_{name}", 0) for name, *_ in INTERCONNECTORS)
     ic_export_mw = sum(ic_exports.values())
@@ -406,45 +433,45 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
 
     # ── Update storage SoC ────────────────────────────────────────────────────
     battery_charge_mw = storage_flows["battery_charge_mw"]
-    ldes_charge_mw    = storage_flows["ldes_charge_mw"]
+    ldes_charge_mw = storage_flows["ldes_charge_mw"]
 
     battery_soc -= battery_discharge_mw * 0.5 / BATTERY_EFFICIENCY
-    battery_soc += battery_charge_mw    * 0.5 * BATTERY_EFFICIENCY
-    battery_soc  = max(0.0, min(CP2030_BATTERY_ENERGY_MWH, battery_soc))
+    battery_soc += battery_charge_mw * 0.5 * BATTERY_EFFICIENCY
+    battery_soc = max(0.0, min(CP2030_BATTERY_ENERGY_MWH, battery_soc))
 
     ldes_soc -= ldes_discharge_mw * 0.5 / LDES_EFFICIENCY
-    ldes_soc += ldes_charge_mw    * 0.5 * LDES_EFFICIENCY
-    ldes_soc  = max(0.0, min(CP2030_LDES_ENERGY_MWH, ldes_soc))
+    ldes_soc += ldes_charge_mw * 0.5 * LDES_EFFICIENCY
+    ldes_soc = max(0.0, min(CP2030_LDES_ENERGY_MWH, ldes_soc))
 
     state["battery_soc_mwh"] = round(battery_soc)
-    state["ldes_soc_mwh"]    = round(ldes_soc)
+    state["ldes_soc_mwh"] = round(ldes_soc)
 
     entry = {
-        "timestamp":             ts.isoformat(),
-        "demand_mw":             round(demand_cp2030),
-        "actual_demand_mw":      round(demand_actual),
+        "timestamp": ts.isoformat(),
+        "demand_mw": round(demand_cp2030),
+        "actual_demand_mw": round(demand_actual),
         "offshore_dispatched_mw": offshore_dispatched,
-        "onshore_dispatched_mw":  onshore_dispatched,
-        "solar_dispatched_mw":    solar_dispatched,
-        "nuclear_dispatched_mw":  nuclear_dispatched,
-        "hydro_dispatched_mw":    hydro_dispatched,
-        "biomass_mw":             biomass_mw,
-        "gas_mw":                 gas_mw,
-        "offshore_curtailed_mw":  offshore_curtailed,
-        "onshore_curtailed_mw":   onshore_curtailed,
-        "solar_curtailed_mw":     solar_curtailed,
-        "nuclear_curtailed_mw":   nuclear_curtailed,
-        "hydro_curtailed_mw":     hydro_curtailed,
-        "battery_charge_mw":      round(battery_charge_mw),
-        "battery_discharge_mw":   battery_discharge_mw,
-        "ldes_charge_mw":         round(ldes_charge_mw),
-        "ldes_discharge_mw":      ldes_discharge_mw,
-        "interconnector_mw":      net_ic,
-        "ic_flows_json":          ic_flows_json,
-        "battery_soc_mwh":        round(battery_soc),
-        "ldes_soc_mwh":           round(ldes_soc),
-        "wholesale_price_gbp":    wholesale_price,
-        "marginal_tech":          marginal_tech,
+        "onshore_dispatched_mw": onshore_dispatched,
+        "solar_dispatched_mw": solar_dispatched,
+        "nuclear_dispatched_mw": nuclear_dispatched,
+        "hydro_dispatched_mw": hydro_dispatched,
+        "biomass_mw": biomass_mw,
+        "gas_mw": gas_mw,
+        "offshore_curtailed_mw": offshore_curtailed,
+        "onshore_curtailed_mw": onshore_curtailed,
+        "solar_curtailed_mw": solar_curtailed,
+        "nuclear_curtailed_mw": nuclear_curtailed,
+        "hydro_curtailed_mw": hydro_curtailed,
+        "battery_charge_mw": round(battery_charge_mw),
+        "battery_discharge_mw": battery_discharge_mw,
+        "ldes_charge_mw": round(ldes_charge_mw),
+        "ldes_discharge_mw": ldes_discharge_mw,
+        "interconnector_mw": net_ic,
+        "ic_flows_json": ic_flows_json,
+        "battery_soc_mwh": round(battery_soc),
+        "ldes_soc_mwh": round(ldes_soc),
+        "wholesale_price_gbp": wholesale_price,
+        "marginal_tech": marginal_tech,
     }
 
     history = state.get("history", [])
@@ -462,7 +489,8 @@ def init_db(db_path):
     """Create tables if they don't exist."""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     with sqlite3.connect(db_path) as con:
-        con.execute("""
+        con.execute(
+            """
             CREATE TABLE IF NOT EXISTS history (
                 timestamp              TEXT PRIMARY KEY,
                 demand_mw              INTEGER,
@@ -490,8 +518,10 @@ def init_db(db_path):
                 wholesale_price_gbp    REAL,
                 marginal_tech          TEXT
             )
-        """)
-        con.execute("""
+        """
+        )
+        con.execute(
+            """
             CREATE TABLE IF NOT EXISTS records (
                 id                   INTEGER PRIMARY KEY CHECK (id = 1),
                 max_curtailment_mw   INTEGER,
@@ -503,7 +533,8 @@ def init_db(db_path):
                 longest_streak_end   TEXT,
                 current_streak_start TEXT
             )
-        """)
+        """
+        )
 
 
 def log_entry(db_path, entry, overwrite=False):
@@ -513,7 +544,8 @@ def log_entry(db_path, entry, overwrite=False):
     """
     verb = "INSERT OR REPLACE" if overwrite else "INSERT OR IGNORE"
     with sqlite3.connect(db_path) as con:
-        con.execute(f"""
+        con.execute(
+            f"""
             {verb} INTO history VALUES (
                 :timestamp, :demand_mw, :actual_demand_mw,
                 :offshore_dispatched_mw, :onshore_dispatched_mw,
@@ -527,7 +559,9 @@ def log_entry(db_path, entry, overwrite=False):
                 :battery_soc_mwh, :ldes_soc_mwh,
                 :wholesale_price_gbp, :marginal_tech
             )
-        """, entry)
+        """,
+            entry,
+        )
 
 
 # ── Records & Derived Stats ───────────────────────────────────────────────────
@@ -551,13 +585,17 @@ def update_records(db_path, entry):
     """Update the records table incrementally from the current entry. O(1)."""
     ts = entry["timestamp"]
     curtailment = (
-        entry["offshore_curtailed_mw"] + entry["onshore_curtailed_mw"]
-        + entry["solar_curtailed_mw"] + entry["nuclear_curtailed_mw"]
+        entry["offshore_curtailed_mw"]
+        + entry["onshore_curtailed_mw"]
+        + entry["solar_curtailed_mw"]
+        + entry["nuclear_curtailed_mw"]
         + entry["hydro_curtailed_mw"]
     )
     renewables = (
-        entry["offshore_dispatched_mw"] + entry["onshore_dispatched_mw"]
-        + entry["solar_dispatched_mw"] + entry["hydro_dispatched_mw"]
+        entry["offshore_dispatched_mw"]
+        + entry["onshore_dispatched_mw"]
+        + entry["solar_dispatched_mw"]
+        + entry["hydro_dispatched_mw"]
     )
 
     with sqlite3.connect(db_path) as con:
@@ -565,9 +603,12 @@ def update_records(db_path, entry):
         rec = con.execute("SELECT * FROM records WHERE id = 1").fetchone()
 
         if rec is None:
-            con.execute("""
+            con.execute(
+                """
                 INSERT INTO records VALUES (1, ?, ?, ?, ?, 0, NULL, NULL, NULL)
-            """, (curtailment, ts, renewables, ts))
+            """,
+                (curtailment, ts, renewables, ts),
+            )
             rec = con.execute("SELECT * FROM records WHERE id = 1").fetchone()
 
         rec = dict(rec)
@@ -584,7 +625,8 @@ def update_records(db_path, entry):
             if rec["current_streak_start"] is None:
                 rec["current_streak_start"] = ts
             streak_hours = (
-                datetime.fromisoformat(ts) - datetime.fromisoformat(rec["current_streak_start"])
+                datetime.fromisoformat(ts)
+                - datetime.fromisoformat(rec["current_streak_start"])
             ).total_seconds() / 3600
             if streak_hours > (rec["longest_streak_hours"] or 0):
                 rec["longest_streak_hours"] = round(streak_hours, 1)
@@ -593,7 +635,8 @@ def update_records(db_path, entry):
         else:
             rec["current_streak_start"] = None
 
-        con.execute("""
+        con.execute(
+            """
             UPDATE records SET
                 max_curtailment_mw   = :max_curtailment_mw,
                 max_curtailment_ts   = :max_curtailment_ts,
@@ -604,17 +647,29 @@ def update_records(db_path, entry):
                 longest_streak_end   = :longest_streak_end,
                 current_streak_start = :current_streak_start
             WHERE id = 1
-        """, rec)
+        """,
+            rec,
+        )
 
     return {
         "last_computed": ts,
-        "max_curtailment": {"value_mw": rec["max_curtailment_mw"], "timestamp": rec["max_curtailment_ts"]},
-        "peak_renewables": {"value_mw": rec["peak_renewables_mw"], "timestamp": rec["peak_renewables_ts"]},
-        "longest_gas_free_streak": {
-            "value_hours": rec["longest_streak_hours"],
-            "start": rec["longest_streak_start"],
-            "end": rec["longest_streak_end"],
-        } if rec["longest_streak_start"] else None,
+        "max_curtailment": {
+            "value_mw": rec["max_curtailment_mw"],
+            "timestamp": rec["max_curtailment_ts"],
+        },
+        "peak_renewables": {
+            "value_mw": rec["peak_renewables_mw"],
+            "timestamp": rec["peak_renewables_ts"],
+        },
+        "longest_gas_free_streak": (
+            {
+                "value_hours": rec["longest_streak_hours"],
+                "start": rec["longest_streak_start"],
+                "end": rec["longest_streak_end"],
+            }
+            if rec["longest_streak_start"]
+            else None
+        ),
     }
 
 
@@ -634,7 +689,8 @@ def init_raw_db(db_path):
     """Create raw history tables if they don't exist."""
     os.makedirs(os.path.dirname(db_path), exist_ok=True)
     with sqlite3.connect(db_path) as con:
-        con.executescript("""
+        con.executescript(
+            """
             CREATE TABLE IF NOT EXISTS raw_generation (
                 settlement_date   TEXT,
                 settlement_period INTEGER,
@@ -658,7 +714,8 @@ def init_raw_db(db_path):
                 generation_mw     REAL,
                 PRIMARY KEY (settlement_date, settlement_period, ic_name)
             );
-        """)
+        """
+        )
 
 
 def save_raw_data(db_path, date_str, sp, elexon, neso, ic_records):
@@ -671,9 +728,14 @@ def save_raw_data(db_path, date_str, sp, elexon, neso, ic_records):
             )
         con.execute(
             "INSERT OR REPLACE INTO raw_embedded VALUES (?,?,?,?,?,?)",
-            (date_str, sp,
-             neso["embedded_wind_mw"], neso["embedded_wind_capacity_mw"],
-             neso["embedded_solar_mw"], neso["embedded_solar_capacity_mw"]),
+            (
+                date_str,
+                sp,
+                neso["embedded_wind_mw"],
+                neso["embedded_wind_capacity_mw"],
+                neso["embedded_solar_mw"],
+                neso["embedded_solar_capacity_mw"],
+            ),
         )
         for r in ic_records:
             con.execute(
