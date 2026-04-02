@@ -359,7 +359,7 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     if gas_p is not None:
         price_kwargs["gas_p"] = gas_p
 
-    wholesale_price, marginal_tech, _, ic_modes, storage_flows, dispatch = (
+    wholesale_price, marginal_tech, ic_exports, storage_flows, dispatch = (
         estimate_wholesale_price(
             offshore_mw=gen["offshore_mw"],
             onshore_mw=gen["onshore_mw"],
@@ -392,7 +392,7 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     hydro_curtailed     = round(max(0, gen["hydro_mw"]    - hydro_dispatched))
 
     ic_import_mw = sum(dispatch.get(f"ic_{name}", 0) for name, *_ in INTERCONNECTORS)
-    ic_export_mw = sum(cap for name, cap, *_ in INTERCONNECTORS if ic_modes.get(name) == "export")
+    ic_export_mw = sum(ic_exports.values())
     net_ic = round(ic_import_mw - ic_export_mw)
 
     # ── Update storage SoC ────────────────────────────────────────────────────

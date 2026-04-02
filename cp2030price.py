@@ -93,7 +93,6 @@ INTERCONNECTORS = [
     ("Moyle",           500, 68, 3),   # N. Ireland (I-SEM)
 ]
 
-MAX_ITERATIONS = 15  # cap on price/IC direction iterations
 
 # ── ENTSO-E Price Fetching ────────────────────────────────────────────────────
 ENTSO_E_URL      = "https://web-api.tp.entsoe.eu/api"
@@ -279,13 +278,13 @@ def fetch_gas_price(api_key=None):
     """
     Fetch the current UK natural gas price from oilpriceapi.com.
 
-    Returns price in p/therm (NBP convention), matching GAS_PRICE_P_PER_THERM.
-    The API commodity code NATURAL_GAS_GBP quotes NBP in p/therm.
-
-    Falls back to GAS_PRICE_P_PER_THERM if api_key is absent or the fetch fails.
+    Returns (price_p_per_therm, source) where source is one of:
+      'live'    — successfully fetched from API
+      'no_key'  — no API key provided, using hardcoded default
+      'failed'  — API call failed, using hardcoded default
     """
     if not api_key:
-        return GAS_PRICE_P_PER_THERM
+        return GAS_PRICE_P_PER_THERM, "no_key"
 
     try:
         resp = requests.get(
@@ -296,10 +295,10 @@ def fetch_gas_price(api_key=None):
         )
         resp.raise_for_status()
         price = resp.json()["data"]["price"]
-        return float(price)
+        return float(price), "live"
     except Exception as e:
         print(f"Gas price fetch failed: {e} — using default {GAS_PRICE_P_PER_THERM}p/therm")
-        return GAS_PRICE_P_PER_THERM
+        return GAS_PRICE_P_PER_THERM, "failed"
 
 
 # ── Subsidy Scheme Fractions ─────────────────────────────────────────────────
@@ -432,14 +431,6 @@ def _find_clearing(bands, demand_mw):
     return round(bands[-1][1], 2) if bands else 0.0, "unserved", dispatch
 
 
-def _ic_mode(price, foreign_price, threshold):
-    if price > foreign_price + threshold:
-        return "import"
-    if price < foreign_price - threshold:
-        return "export"
-    return "none"
-
-
 # ── Price Estimation ──────────────────────────────────────────────────────────
 
 def estimate_wholesale_price(
@@ -455,10 +446,15 @@ def estimate_wholesale_price(
     Estimate wholesale clearing price, marginal generator, interconnector flows,
     and storage dispatch for one settlement period.
 
-    Storage discharge sits in the static merit order so it influences price and
-    IC directions from the first iteration. IC directions are then resolved
-    iteratively. After convergence, storage charging is computed analytically
-    as the surplus supply available at or below the storage max charge price.
+    IC imports enter the supply stack as bands at (foreign_p + threshold).
+    IC exports are computed analytically as surplus absorbed below each IC's
+    export threshold (foreign_p − threshold), highest-value market first.
+    A single IC cannot simultaneously import and export: its import bid always
+    sits above its export threshold, so surplus at the export threshold implies
+    the import band was not needed, and vice versa.
+
+    Storage charging is computed analytically in the same way: absorb surplus
+    below the max charge price before clearing.
 
     Args:
         offshore_mw:      CP2030 offshore wind output this period (MW)
@@ -477,109 +473,80 @@ def estimate_wholesale_price(
     Returns:
         price:          Clearing price in £/MWh
         marginal:       Label of the marginal technology band
-        iterations:     Number of iterations to convergence
-        ic_flows:       Dict of {name: 'import'|'export'|'none'}
+        ic_exports:     Dict of {ic_name: export_mw} for ICs that exported
         storage_flows:  Dict with battery/ldes charge and discharge MW
+        dispatch:       Dict of {label: mw_dispatched} for all dispatched bands
     """
     # ── Storage bids: always below every gas and biomass band ────────────────
-    # Gas band floor varies with gas price; biomass floor is fixed at ~60 £/MWh.
-    # Using the lower of the two guarantees storage clears before all thermal bands.
     ccgt          = ccgt_srmc(gas_p, carbon)
     gas_floor     = ccgt - GAS_CCGT_SIGMA * 3.0
     biomass_floor = BIOMASS_BID[0] - BIOMASS_BID[1] * 3.0   # 90 − 30 = 60 £/MWh
     dispatch_floor = min(gas_floor, biomass_floor)
 
     bat_discharge_bid      = dispatch_floor - BATTERY_BELOW_FLOOR
-    ldes_discharge_bid     = dispatch_floor - BATTERY_BELOW_FLOOR + 2  # LDES just above battery
+    ldes_discharge_bid     = dispatch_floor - BATTERY_BELOW_FLOOR + 2
     max_bat_charge_price   = bat_discharge_bid  * BATTERY_EFFICIENCY ** 2
     max_ldes_charge_price  = ldes_discharge_bid * LDES_EFFICIENCY    ** 2
 
-    # ── Available storage discharge (capped by SoC) ───────────────────────────
-    bat_discharge_avail_mw  = min(
-        CP2030_BATTERY_POWER_MW,
-        battery_soc_mwh * 2 * BATTERY_EFFICIENCY,
-    )
-    ldes_discharge_avail_mw = min(
-        CP2030_LDES_POWER_MW,
-        ldes_soc_mwh * 2 * LDES_EFFICIENCY,
-    )
+    # ── Available storage MW (capped by SoC) ─────────────────────────────────
+    bat_discharge_avail_mw  = min(CP2030_BATTERY_POWER_MW,  battery_soc_mwh * 2 * BATTERY_EFFICIENCY)
+    ldes_discharge_avail_mw = min(CP2030_LDES_POWER_MW,     ldes_soc_mwh    * 2 * LDES_EFFICIENCY)
+    bat_charge_avail_mw     = min(CP2030_BATTERY_POWER_MW,  (CP2030_BATTERY_ENERGY_MWH - battery_soc_mwh) / BATTERY_EFFICIENCY * 2)
+    ldes_charge_avail_mw    = min(CP2030_LDES_POWER_MW,     (CP2030_LDES_ENERGY_MWH    - ldes_soc_mwh)    / LDES_EFFICIENCY    * 2)
 
-    # ── Static merit order: domestic generation + storage discharge ───────────
-    storage_discharge_bands = (
-        _normal_bands(bat_discharge_avail_mw,  bat_discharge_bid,  BATTERY_DISCHARGE_SIGMA, "battery_discharge")
-        + _normal_bands(ldes_discharge_avail_mw, ldes_discharge_bid, LDES_DISCHARGE_SIGMA,  "ldes_discharge")
-    )
-    static_bands = sorted(
-        build_merit_order(offshore_mw, onshore_mw, solar_mw, nuclear_mw, hydro_mw, gas_p, carbon)
-        + storage_discharge_bands,
-        key=lambda x: x[1],
-    )
-
-    # ── Iterative IC direction / price convergence ────────────────────────────
-    # Use live foreign prices where available, falling back to INTERCONNECTORS defaults.
+    # ── IC parameters ─────────────────────────────────────────────────────────
     ic_params = {
         name: (cap, (foreign_prices or {}).get(name, default_fp), thresh)
         for name, cap, default_fp, thresh in INTERCONNECTORS
     }
 
-    # ── Available storage charge capacity (capped by SoC headroom) ───────────
-    bat_charge_avail_mw  = min(
-        CP2030_BATTERY_POWER_MW,
-        (CP2030_BATTERY_ENERGY_MWH - battery_soc_mwh) / BATTERY_EFFICIENCY * 2,
+    # ── Full supply stack: generation + storage discharge + IC imports ────────
+    # IC import bands sit at (foreign_p + threshold). They are always present;
+    # they only get dispatched if the clearing price reaches that level.
+    ic_import_bands = [
+        (cap, foreign_p + thresh, f"ic_{name}")
+        for name, (cap, foreign_p, thresh) in ic_params.items()
+    ]
+    storage_discharge_bands = (
+        _normal_bands(bat_discharge_avail_mw,  bat_discharge_bid,  BATTERY_DISCHARGE_SIGMA, "battery_discharge")
+        + _normal_bands(ldes_discharge_avail_mw, ldes_discharge_bid, LDES_DISCHARGE_SIGMA,  "ldes_discharge")
     )
-    ldes_charge_avail_mw = min(
-        CP2030_LDES_POWER_MW,
-        (CP2030_LDES_ENERGY_MWH - ldes_soc_mwh) / LDES_EFFICIENCY * 2,
+    all_bands = sorted(
+        build_merit_order(offshore_mw, onshore_mw, solar_mw, nuclear_mw, hydro_mw, gas_p, carbon)
+        + storage_discharge_bands
+        + ic_import_bands,
+        key=lambda x: x[1],
     )
 
-    ic_modes       = {name: "none" for name in ic_params}
-    seen_states    = []
-    battery_charge_mw = 0.0
-    ldes_charge_mw    = 0.0
+    # ── Analytical storage charging ───────────────────────────────────────────
+    supply_at_bat_price  = sum(mw for mw, p, _ in all_bands if p <= max_bat_charge_price)
+    bat_surplus          = max(0.0, supply_at_bat_price - demand_mw)
+    battery_charge_mw    = min(bat_charge_avail_mw, bat_surplus)
 
-    for iteration in range(1, MAX_ITERATIONS + 1):
-        export_mw = sum(
-            cap for name, (cap, _, _) in ic_params.items()
-            if ic_modes[name] == "export"
-        )
+    supply_at_ldes_price = sum(mw for mw, p, _ in all_bands if p <= max_ldes_charge_price)
+    ldes_surplus         = max(0.0, supply_at_ldes_price - demand_mw - battery_charge_mw)
+    ldes_charge_mw       = min(ldes_charge_avail_mw, ldes_surplus)
 
-        ic_import_bands = [
-            (cap, foreign_p + thresh, f"ic_{name}")
-            for name, (cap, foreign_p, thresh) in ic_params.items()
-            if ic_modes[name] == "import"
-        ]
+    # ── Analytical IC exports ─────────────────────────────────────────────────
+    # Each IC absorbs surplus below its export threshold (foreign_p − threshold).
+    # Process highest-value export market first so premium markets claim surplus first.
+    # Mutual exclusion: an IC's import bid (foreign_p + threshold) is always above its
+    # export threshold, so if surplus exists at the export threshold the import band
+    # has not been dispatched, and if there is no surplus the IC will import instead.
+    ic_exports = {}
+    effective_demand = demand_mw + battery_charge_mw + ldes_charge_mw
+    for name in sorted(ic_params, key=lambda n: ic_params[n][1] - ic_params[n][2], reverse=True):
+        cap, foreign_p, thresh = ic_params[name]
+        export_threshold = foreign_p - thresh
+        supply_at_export = sum(mw for mw, p, _ in all_bands if p <= export_threshold)
+        surplus = max(0.0, supply_at_export - effective_demand)
+        export_mw = min(cap, surplus)
+        if export_mw > 0:
+            ic_exports[name] = round(export_mw)
+            effective_demand += export_mw
 
-        all_bands = sorted(static_bands + ic_import_bands, key=lambda x: x[1])
-
-        # ── Analytical storage charging ───────────────────────────────────────
-        # Charging adds to effective demand, so it must be included here to
-        # allow IC modes to converge to the correct equilibrium.
-        supply_at_bat_price  = sum(mw for mw, p, _ in all_bands if p <= max_bat_charge_price)
-        bat_surplus          = max(0.0, supply_at_bat_price - demand_mw - export_mw)
-        battery_charge_mw    = min(bat_charge_avail_mw, bat_surplus)
-
-        supply_at_ldes_price = sum(mw for mw, p, _ in all_bands if p <= max_ldes_charge_price)
-        ldes_surplus         = max(0.0, supply_at_ldes_price - demand_mw - export_mw - battery_charge_mw)
-        ldes_charge_mw       = min(ldes_charge_avail_mw, ldes_surplus)
-
-        effective_demand = demand_mw + export_mw + battery_charge_mw + ldes_charge_mw
-        price, marginal, dispatch = _find_clearing(all_bands, effective_demand)
-
-        new_modes = {
-            name: _ic_mode(price, foreign_p, thresh)
-            for name, (_, foreign_p, thresh) in ic_params.items()
-        }
-
-        if new_modes == ic_modes:
-            break
-
-        if new_modes in seen_states:
-            break   # oscillation — IC on price boundary, current price is best estimate
-
-        seen_states.append(dict(ic_modes))
-        ic_modes = new_modes
-    else:
-        iteration = MAX_ITERATIONS
+    # ── Single clearing pass ──────────────────────────────────────────────────
+    price, marginal, dispatch = _find_clearing(all_bands, effective_demand)
 
     storage_flows = {
         "battery_discharge_avail_mw": round(bat_discharge_avail_mw),
@@ -588,7 +555,7 @@ def estimate_wholesale_price(
         "ldes_charge_mw":             round(ldes_charge_mw),
     }
 
-    return price, marginal, iteration, ic_modes, storage_flows, dispatch
+    return price, marginal, ic_exports, storage_flows, dispatch
 
 
 # ── Scenario Tests ────────────────────────────────────────────────────────────
@@ -610,18 +577,25 @@ if __name__ == "__main__":
         foreign_prices = None
 
     print()
-    print(f"Gas assumptions: {GAS_PRICE_P_PER_THERM}p/therm, £{CARBON_PRICE_GBP_PER_TONNE}/tCO2")
-    print(f"CCGT SRMC: £{ccgt_srmc():.1f}/MWh    OCGT SRMC: £{ocgt_srmc():.1f}/MWh")
     _ccgt = ccgt_srmc()
-    print(f"Battery discharge bid: £{_ccgt - BATTERY_BELOW_CCGT:.1f}/MWh  "
-          f"LDES discharge bid: £{_ccgt - LDES_BELOW_CCGT:.1f}/MWh")
+    _ocgt = ocgt_srmc()
+    _gas_floor   = _ccgt - GAS_CCGT_SIGMA * 3.0
+    _biom_floor  = BIOMASS_BID[0] - BIOMASS_BID[1] * 3.0
+    _bat_bid     = min(_gas_floor, _biom_floor) - BATTERY_BELOW_FLOOR
+    _ldes_bid    = _bat_bid + 2
+    print(f"Gas assumptions: {GAS_PRICE_P_PER_THERM}p/therm, £{CARBON_PRICE_GBP_PER_TONNE}/tCO2")
+    print(f"CCGT SRMC: £{_ccgt:.1f}/MWh    OCGT SRMC: £{_ocgt:.1f}/MWh")
+    print(f"Gas band floor: £{_gas_floor:.1f}/MWh    Biomass band floor: £{_biom_floor:.1f}/MWh")
+    print(f"Battery discharge bid: £{_bat_bid:.1f}/MWh  (charge ceiling: £{_bat_bid * BATTERY_EFFICIENCY**2:.1f}/MWh)")
+    print(f"LDES    discharge bid: £{_ldes_bid:.1f}/MWh  (charge ceiling: £{_ldes_bid * LDES_EFFICIENCY**2:.1f}/MWh)")
     total_ic_mw = sum(cap for _, cap, _, _ in INTERCONNECTORS)
     print(f"Total IC capacity: {total_ic_mw:,} MW across {len(INTERCONNECTORS)} links")
     print()
 
     scenarios = [
+        # ── Normal operating conditions ───────────────────────────────────────
         {
-            "name": "Windy summer afternoon (big surplus)",
+            "name": "Windy summer afternoon — large renewable surplus",
             "offshore_mw":    38_000,
             "onshore_mw":     22_000,
             "solar_mw":       18_000,
@@ -630,6 +604,7 @@ if __name__ == "__main__":
             "demand_mw":      28_000,
             "battery_soc_mwh": 10_000,
             "ldes_soc_mwh":    10_000,
+            "expect": "Negative/near-zero price; batteries and LDES charging; heavy exports",
         },
         {
             "name": "Moderate wind, typical winter day",
@@ -641,6 +616,7 @@ if __name__ == "__main__":
             "demand_mw":      36_000,
             "battery_soc_mwh": 25_000,
             "ldes_soc_mwh":    20_000,
+            "expect": "Battery/LDES covers shortfall; no or minimal gas",
         },
         {
             "name": "Low wind, winter evening — storage full",
@@ -652,6 +628,7 @@ if __name__ == "__main__":
             "demand_mw":      38_000,
             "battery_soc_mwh": 50_000,
             "ldes_soc_mwh":    40_000,
+            "expect": "Storage discharges before gas; price set by battery bid",
         },
         {
             "name": "Low wind, winter evening — storage empty",
@@ -663,11 +640,61 @@ if __name__ == "__main__":
             "demand_mw":      38_000,
             "battery_soc_mwh":     0,
             "ldes_soc_mwh":        0,
+            "expect": "Gas/biomass marginal; high price; no storage discharge",
+        },
+        # ── Edge cases ────────────────────────────────────────────────────────
+        {
+            "name": "EDGE: nuclear offline, low wind — stress test",
+            "offshore_mw":     5_000,
+            "onshore_mw":      2_000,
+            "solar_mw":            0,
+            "nuclear_mw":          0,
+            "hydro_mw":          500,
+            "demand_mw":      38_000,
+            "battery_soc_mwh":  5_000,
+            "ldes_soc_mwh":     5_000,
+            "expect": "Heavy gas dispatch; OCGT likely marginal; very high price",
+        },
+        {
+            "name": "EDGE: massive surplus, all storage full",
+            "offshore_mw":    47_000,
+            "onshore_mw":     28_000,
+            "solar_mw":       30_000,
+            "nuclear_mw":      3_800,
+            "hydro_mw":        1_870,
+            "demand_mw":      25_000,
+            "battery_soc_mwh": 50_000,  # full — can't charge
+            "ldes_soc_mwh":    40_000,  # full — can't charge
+            "expect": "Deep negative price; curtailment; no storage charging (full); heavy exports",
+        },
+        {
+            "name": "EDGE: demand exactly met by renewables + nuclear",
+            "offshore_mw":    15_000,
+            "onshore_mw":      8_000,
+            "solar_mw":        5_000,
+            "nuclear_mw":      3_800,
+            "hydro_mw":        1_000,
+            "demand_mw":      32_800,  # = sum of above
+            "battery_soc_mwh": 25_000,
+            "ldes_soc_mwh":    20_000,
+            "expect": "Price near zero (hydro or nuclear marginal); no gas; no curtailment",
+        },
+        {
+            "name": "EDGE: zero renewables (dark doldrums)",
+            "offshore_mw":         0,
+            "onshore_mw":          0,
+            "solar_mw":            0,
+            "nuclear_mw":      3_800,
+            "hydro_mw":          500,
+            "demand_mw":      35_000,
+            "battery_soc_mwh": 25_000,
+            "ldes_soc_mwh":    20_000,
+            "expect": "Gas dominant; OCGT likely marginal; storage discharges first",
         },
     ]
 
     for s in scenarios:
-        price, marginal, iterations, ic_flows, storage, dispatch = estimate_wholesale_price(
+        price, marginal, ic_exports, storage, dispatch = estimate_wholesale_price(
             s["offshore_mw"], s["onshore_mw"], s["solar_mw"],
             s["nuclear_mw"],  s["hydro_mw"],   s["demand_mw"],
             battery_soc_mwh=s["battery_soc_mwh"],
@@ -675,21 +702,24 @@ if __name__ == "__main__":
             foreign_prices=foreign_prices,
         )
         total_vre = s["offshore_mw"] + s["onshore_mw"] + s["solar_mw"]
-        imports = [n for n, m in ic_flows.items() if m == "import"]
-        exports = [n for n, m in ic_flows.items() if m == "export"]
+        imports = {n: round(dispatch.get(f"ic_{n}", 0)) for n in [name for name, *_ in INTERCONNECTORS]
+                   if dispatch.get(f"ic_{n}", 0) > 0}
+        gas_mw   = dispatch.get("gas_ccgt", 0) + dispatch.get("gas_ocgt", 0)
+        bat_dis  = dispatch.get("battery_discharge", 0)
+        ldes_dis = dispatch.get("ldes_discharge", 0)
 
         print(f"  {s['name']}")
+        print(f"    Expect: {s['expect']}")
         print(f"    VRE {total_vre:,} + nuclear {s['nuclear_mw']:,} + hydro {s['hydro_mw']:,} MW  |  "
               f"demand {s['demand_mw']:,} MW")
-        print(f"    SoC: battery {s['battery_soc_mwh']:,} / {CP2030_BATTERY_ENERGY_MWH:,} MWh  "
-              f"LDES {s['ldes_soc_mwh']:,} / {CP2030_LDES_ENERGY_MWH:,} MWh")
-        print(f"    → £{price:.2f}/MWh  [marginal: {marginal}]  [{iterations} iteration(s)]")
+        print(f"    SoC: battery {s['battery_soc_mwh']:,}/{CP2030_BATTERY_ENERGY_MWH:,} MWh  "
+              f"LDES {s['ldes_soc_mwh']:,}/{CP2030_LDES_ENERGY_MWH:,} MWh")
+        print(f"    → £{price:.1f}/MWh  [marginal: {marginal}]")
+        print(f"    gas: {gas_mw:,.0f} MW  |  "
+              f"bat discharge: {bat_dis:,.0f} MW  charge: {storage['battery_charge_mw']:,} MW  |  "
+              f"LDES discharge: {ldes_dis:,.0f} MW  charge: {storage['ldes_charge_mw']:,} MW")
         if imports:
-            print(f"    IC imports:  {', '.join(imports)}")
-        if exports:
-            print(f"    IC exports:  {', '.join(exports)}")
-        print(f"    storage discharge avail:  battery {storage['battery_discharge_avail_mw']:,} MW  "
-              f"LDES {storage['ldes_discharge_avail_mw']:,} MW")
-        print(f"    storage charging:         battery {storage['battery_charge_mw']:,} MW  "
-              f"LDES {storage['ldes_charge_mw']:,} MW")
+            print(f"    IC imports (MW): { {n: f'{mw:,.0f}' for n, mw in imports.items()} }")
+        if ic_exports:
+            print(f"    IC exports (MW): { {n: f'{mw:,}' for n, mw in ic_exports.items()} }")
         print()
