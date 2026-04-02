@@ -10,6 +10,7 @@ import json
 import os
 import sqlite3
 import sys
+import time
 import requests
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -146,6 +147,19 @@ def _round_timestamp(dt, floor=False):
 # ── Data Fetching ─────────────────────────────────────────────────────────────
 
 
+def _with_retry(fn, retries=3, backoff=2):
+    """Call fn(), retrying up to `retries` times with exponential backoff."""
+    for attempt in range(retries):
+        try:
+            return fn()
+        except Exception as e:
+            if attempt == retries - 1:
+                raise
+            wait = backoff ** attempt  # 1s, 2s, 4s
+            print(f"Attempt {attempt + 1} failed: {e} — retrying in {wait}s")
+            time.sleep(wait)
+
+
 def current_settlement_period():
     """Return (iso_date_str, settlement_period) for the current UK local time.
     Settlement periods are defined in UK local time (GMT/BST), so we must convert
@@ -159,24 +173,21 @@ def current_settlement_period():
 def fetch_elexon():
     """Fetch current generation outturn from Elexon BMRS.
     Returns a dict of {fuelType: currentUsage_MW}."""
-    resp = requests.get(ELEXON_URL, timeout=30)
-    resp.raise_for_status()
-    return {item["fuelType"]: item["currentUsage"] for item in resp.json()}
+    def _fetch():
+        resp = requests.get(ELEXON_URL, timeout=30)
+        resp.raise_for_status()
+        return {item["fuelType"]: item["currentUsage"] for item in resp.json()}
+    return _with_retry(_fetch)
 
 
 def _neso_query(sql):
-    for attempt in range(3):
-        try:
-            resp = requests.get(
-                NESO_URL, params=parse.urlencode({"sql": sql}), timeout=30
-            )
-            resp.raise_for_status()
-            return resp.json()["result"]["records"]
-        except Exception as e:
-            if attempt == 2:
-                raise
-            continue
-    return resp.json()["result"]["records"]
+    def _fetch():
+        resp = requests.get(
+            NESO_URL, params=parse.urlencode({"sql": sql}), timeout=30
+        )
+        resp.raise_for_status()
+        return resp.json()["result"]["records"]
+    return _with_retry(_fetch)
 
 
 def fetch_neso(date_str, sp):
@@ -212,13 +223,17 @@ def fetch_interconnectors(date_str, sp):
     Each record has 'interconnectorName' and 'generation' (MW, negative = exporting).
     """
     date_only = date_str[:10]
-    resp = requests.get(
-        ELEXON_IC_URL,
-        params={"settlementDateFrom": date_only, "settlementDateTo": date_only},
-        timeout=30,
-    )
-    resp.raise_for_status()
-    all_records = resp.json()["data"]
+
+    def _fetch():
+        resp = requests.get(
+            ELEXON_IC_URL,
+            params={"settlementDateFrom": date_only, "settlementDateTo": date_only},
+            timeout=30,
+        )
+        resp.raise_for_status()
+        return resp.json()["data"]
+
+    all_records = _with_retry(_fetch)
 
     period_records = [r for r in all_records if r["settlementPeriod"] == sp]
     if not period_records and all_records:

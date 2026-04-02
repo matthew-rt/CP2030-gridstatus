@@ -209,6 +209,9 @@ def _fetch_area_prices_eur(area_code, api_key):
                     slot_dt = period_start_dt + timedelta(minutes=interval_minutes * (int(pos_el.text) - 1))
                     prices[slot_dt.strftime("%Y-%m-%dT%H:%M:%SZ")] = float(price_el.text)
 
+    if not prices:
+        print(f"ENTSO-E: no prices parsed from response for {area_code}. First 500 chars: {resp.text[:500]}")
+
     return prices   # {utc_iso: price_eur}
 
 
