@@ -302,6 +302,7 @@ def cp2030_generation(elexon, neso):
     # New-build offshore capacity uses a higher load factor (modern larger turbines).
     # Cap both at 1.0 to avoid physically impossible output.
     new_offshore_mw = CP2030_OFFSHORE_WIND_MW - CURRENT_OFFSHORE_WIND_CAPACITY_MW
+    print(new_offshore_mw)
     offshore_mw = (
         offshore_lf * CURRENT_OFFSHORE_WIND_CAPACITY_MW
         + min(offshore_lf * NEW_OFFSHORE_LF_MULTIPLIER, 1.0) * new_offshore_mw
