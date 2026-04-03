@@ -155,7 +155,7 @@ def _with_retry(fn, retries=3, backoff=2):
         except Exception as e:
             if attempt == retries - 1:
                 raise
-            wait = backoff ** attempt  # 1s, 2s, 4s
+            wait = backoff**attempt  # 1s, 2s, 4s
             print(f"Attempt {attempt + 1} failed: {e} — retrying in {wait}s")
             time.sleep(wait)
 
@@ -173,20 +173,21 @@ def current_settlement_period():
 def fetch_elexon():
     """Fetch current generation outturn from Elexon BMRS.
     Returns a dict of {fuelType: currentUsage_MW}."""
+
     def _fetch():
         resp = requests.get(ELEXON_URL, timeout=30)
         resp.raise_for_status()
         return {item["fuelType"]: item["currentUsage"] for item in resp.json()}
+
     return _with_retry(_fetch)
 
 
 def _neso_query(sql):
     def _fetch():
-        resp = requests.get(
-            NESO_URL, params=parse.urlencode({"sql": sql}), timeout=30
-        )
+        resp = requests.get(NESO_URL, params=parse.urlencode({"sql": sql}), timeout=30)
         resp.raise_for_status()
         return resp.json()["result"]["records"]
+
     return _with_retry(_fetch)
 
 
@@ -307,7 +308,7 @@ def cp2030_generation(elexon, neso):
     )
     onshore_mw = onshore_lf * CP2030_ONSHORE_WIND_MW
     wind_mw = onshore_mw + offshore_mw
-
+    print(f"Total wind_mw: {wind_mw} (onshore: {onshore_mw}, offshore: {offshore_mw})")
     # Solar: embedded only, scaled to CP2030 solar capacity
     solar_lf = (
         neso["embedded_solar_mw"] / neso["embedded_solar_capacity_mw"]
