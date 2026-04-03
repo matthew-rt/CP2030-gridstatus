@@ -302,17 +302,13 @@ def cp2030_generation(elexon, neso):
     # New-build offshore capacity uses a higher load factor (modern larger turbines).
     # Cap both at 1.0 to avoid physically impossible output.
     new_offshore_mw = CP2030_OFFSHORE_WIND_MW - CURRENT_OFFSHORE_WIND_CAPACITY_MW
-    print(new_offshore_mw)
     offshore_mw = (
         offshore_lf * CURRENT_OFFSHORE_WIND_CAPACITY_MW
         + min(offshore_lf * NEW_OFFSHORE_LF_MULTIPLIER, 1.0) * new_offshore_mw
     )
-    print(
-        f"Offshore wind LF: {offshore_lf:.2f}, output: {offshore_output:.0f} MW, scaled to {offshore_mw:.0f} MW"
-    )
+
     onshore_mw = onshore_lf * CP2030_ONSHORE_WIND_MW
     wind_mw = onshore_mw + offshore_mw
-    print(f"Total wind_mw: {wind_mw} (onshore: {onshore_mw}, offshore: {offshore_mw})")
     # Solar: embedded only, scaled to CP2030 solar capacity
     solar_lf = (
         neso["embedded_solar_mw"] / neso["embedded_solar_capacity_mw"]
