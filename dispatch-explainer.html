@@ -1,0 +1,1363 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CP2030 — Dispatch Explainer</title>
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --surface: #ffffff;
+      --border: #e2e8f0;
+      --text: #0f172a;
+      --muted: #64748b;
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 15px;
+      line-height: 1.6;
+      padding: 1.5rem 1rem 4rem;
+    }
+
+    .container {
+      max-width: 740px;
+      margin: 0 auto;
+    }
+
+    /* ── Header ── */
+    header {
+      margin-bottom: 2.5rem;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.875rem;
+      margin-top: 0.25rem;
+    }
+
+    /* ── Prose sections ── */
+    .section {
+      margin-bottom: 3rem;
+    }
+
+    h2 {
+      font-size: 1.15rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      margin-bottom: 0.75rem;
+    }
+
+    p {
+      color: var(--text);
+      margin-bottom: 0.9rem;
+    }
+
+    p:last-child {
+      margin-bottom: 0;
+    }
+
+    /* ── Chart cards ── */
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      margin: 1.5rem 0;
+    }
+
+    .chart-title {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 1rem;
+    }
+
+    .chart-area {
+      width: 100%;
+    }
+
+    /* ── Divider ── */
+    hr {
+      border: none;
+      border-top: 1px solid var(--border);
+      margin: 2.5rem 0;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+
+    <header style="display:flex; justify-content:space-between; align-items:flex-start;">
+      <div>
+        <h1>How the price model works</h1>
+        <p class="subtitle">A walkthrough of the merit order dispatch and wholesale price simulation — <a
+            href="cp2030gridmix.html" style="color:var(--muted)">live view</a> · <a href="cp2030replay.html"
+            style="color:var(--muted)">replay history</a></p>
+      </div>
+      <a href="https://github.com/matthew-rt/CP2030-gridstatus" target="_blank" rel="noopener"
+        style="color:var(--muted); margin-top:0.25rem; flex-shrink:0;">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482
+                 0-.237-.009-.868-.013-1.703-2.782.604-3.369-1.342-3.369-1.342-.454-1.155-1.11-1.462-1.11-1.462
+                 -.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832
+                 .092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683
+                 -.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0 1 12 6.836a9.59 9.59 0
+                 0 1 2.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.202 2.394.1 2.647.64.699 1.028
+                 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012
+                 2.415-.012 2.743 0 .267.18.579.688.481C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z" />
+        </svg>
+      </a>
+    </header>
+
+    <!-- ── Section 1: Overview ── -->
+    <div class="section">
+      <h2>Overview</h2>
+      <p>
+        To decide what technologies get dispatched and at what price, we need to model the mechanics of the wholesale
+        electricity market. To keep things relatively simple,
+        we assume that all generation is sold in a single day-ahead auction, to one buyer. Reality is more complicated,
+        with intra-day trading, balancing markets, and a variety of contract
+        types and actors in the system, but our approach should capture the major price-setting dynamics.
+      </p>
+    </div>
+
+    <hr>
+
+    <!-- ── Section 2: Merit order ── -->
+    <div class="section">
+      <h2>The merit order</h2>
+      <p>
+        Whoever is purchasing electricity wants to get it as cheaply as possible, so they buy electricity from the
+        cheapest generators first. They continue to buy from more expensive generators until they have the required
+        amount of electricity.
+        One feature of the market that seems peculiar to some is that all generators get paid the price of the most
+        expensive unit of electricity.
+        This is called "pay-as-clear" pricing. In the example below, demand is 45GW, so the market clears at £80/MWh,
+        and all generation gets paid that price.
+
+      </p>
+
+      <div id="merit-order-chart"></div>
+    </div>
+
+    <hr>
+
+    <!-- ── Section 3: Subsidy schemes and bidding ── -->
+    <div class="section">
+      <h2>How generators bid</h2>
+      <p>
+        Economic theory would suggest that generators should bid into the market at their short run marginal cost. In
+        layman's terms, this is the cost of producing one additional unit of electricity (ignoring any fixed costs). For
+        technologies like wind and solar, this cost is very close to zero, so they would typically bid in at or close to
+        £0/MWh. For generators with a fuel cost, like gas or biomass, their short run marginal cost is heavily
+        influenced by the price of their fuel, so this sets the price. For gas generators in our model, we pull the gas
+        price from a market feed, and update the bid price on a daily basis accordingly.
+      </p>
+      <p>
+        However, the market in the UK is distorted by various subsidy schemes, which change this bidding behaviour. The
+        most significant of these is the Renewables Obligation, which provides a subsidy for each unit of generation
+        from eligible renewable sources.To receive this subsidy, which amounts to roughly £40-50/MWh for onshore wind
+        and solar, the generator must sell their electricity.
+
+        The generator can therefore bid in at a negative price (roughly up to the negative of the subsidy amount), which
+        ensures they get dispatched, and still come out ahead. This was also true for the initial Contracts for
+        Difference (CfD) scheme, but more recent CfD rounds have removed subsidy for hours where the market price is
+        negative.
+      </p>
+      <p>
+        Bidding in at a negative price may seem odd, but even without the subsidy, it can make sense for some generators
+        to do this. A nuclear plant might have very high costs for shutting down and restarting, so would rather pay to
+        stay generating and expect to make up the loss when prices are higher. In reality, most of the negative pricing
+        periods are driven by subsidised renewables.
+
+        Within one technology type, there will therefore be a range of bid prices based on the subsidy scheme. Offshore
+        wind generators with an RO receive 2 certificates, meaning their subsidy was worth roughly £100/MWh. For the
+        first CfD round, the strike price was around £120, and there was no negative pricing rule, so these generators
+        could bid in at around -£120/MWh. The strike price continued to fall, but it was only by round 4 that the strict
+        negative pricing rule came in, removing any subsidy for hours where the market price is negative. Any wind
+        generators from this round onwards (and any non-subsidised generators) would be expected to bid in at around
+        £0/MWh, as they have no incentive to bid negative, but also no reason to bid above their short run marginal
+        cost.
+
+
+
+      </p>
+
+      <div id="wind-rounds-chart"></div>
+      <div id="wind-rounds-tooltip" style="
+        position: fixed; display: none; pointer-events: none;
+        background: #0f172a; color: #f8fafc; font-size: 12px; line-height: 1.5;
+        padding: 0.6rem 0.8rem; border-radius: 8px; max-width: 220px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      "></div>
+
+      <p>
+        Note that the vast majority of the goal offshore wind capactity by 2030 should be from the later CfD rounds or
+        merchant projects, so we would expect most of it to be bidding in at around £0/MWh. There may also be minor
+        differences in bidding behaviour, even for generators with identical subsidy, so the real picture will be
+        slightly messier.
+      </p>
+    </div>
+
+    <hr>
+
+    <!-- ── Section 5: Simulating bids ── -->
+    <div class="section">
+      <h2>Simulating bids</h2>
+      <p>
+        To account for some of this complexity (whilst avoiding modelling every site individually), we divide each
+        technology into its subsidy scheme, and then assign a representative bid price to each group. We divide each
+        subsidy scheme into bands, and add some noise to the bid prices to reflect variation within the band. We get the
+        load factor for each technology type from NESO and Elexon: for more details see the github readme.
+      </p>
+
+      <div id="bid-bands-chart"></div>
+      <div id="bid-bands-tooltip" style="
+        position: fixed; display: none; pointer-events: none;
+        background: #0f172a; color: #f8fafc; font-size: 12px; line-height: 1.5;
+        padding: 0.6rem 0.8rem; border-radius: 8px; max-width: 220px;
+        font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+      "></div>
+    </div>
+
+    <p>
+      We do this for all our technologies. We then need to sort the bands by price to get our new merit order, which
+      creates some "overlap" between technologies, rather than all of one technology being cheaper than all of another.
+      The resultant merit order still has noticeable steps, but has more variation in the bid prices.
+    </p>
+
+    <div id="banded-merit-chart"></div>
+    <div id="banded-merit-tooltip"
+      style="position:fixed;display:none;pointer-events:none;background:#0f172a;color:#f8fafc;font-size:12px;line-height:1.5;padding:0.6rem 0.8rem;border-radius:8px;max-width:220px;font-family:-apple-system,BlinkMacSystemFont,Segoe UI,sans-serif;">
+    </div>
+    <hr>
+    <p>
+      It's important to remember that the clearing price is a function of both demand and supply. Two hours with the
+      same demand can have very different prices, depending on what generation is available. The availability of
+      renewables will vary with the weather, but gas has a fairly consistent availability, so will often set the price.
+      It's also worth noting that the price of gas powered electricity is much more variable than the price of
+      renewables, as the majority of the cost is the cost of fuel, which can change rapidly.
+    </p>
+
+    <div style="display:flex;gap:1rem;margin:1.5rem 0;">
+      <div id="scenario-high-chart" style="flex:1;min-width:0;"></div>
+      <div id="scenario-low-chart" style="flex:1;min-width:0;"></div>
+    </div>
+    <div id="scenario-tooltip"
+      style="position:fixed;display:none;pointer-events:none;background:#0f172a;color:#f8fafc;font-size:12px;line-height:1.5;padding:0.6rem 0.8rem;border-radius:8px;max-width:220px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+    </div>
+
+    <div class="section">
+      <h2>Interconnectors and storage</h2>
+      <p>
+        Interconnectors and storage are where things get slightly more complicated, as they can both import/export
+        electricity depending on the price.
+      </p>
+      <p>
+        Interconnector flows will be governed by the difference in prices between markets. Power flows from low to high
+        price zones. To model this, we use day-ahead prices from ENTSO-E for each neighbouring country. Remember that
+        we're imaging that we have 2030's grid today: in reality, by 2030 our neighbours power systems will also have
+        changed, so their wholesale prices will also be different. To simplify things, we assume that prices in our
+        neigh Each link has a
+        threshold representing transmission losses and friction — shorter AC links use £3/MWh and longer HVDC links use
+        £5/MWh. Imports are handled by placing each interconnector's capacity directly into the merit order as a supply
+        band at the foreign price plus the threshold: if the GB price would otherwise clear above that level, the link
+        imports. Exports are computed analytically: if there is surplus generation below the foreign price minus the
+        threshold, that surplus is exported up to the link's capacity, with the highest-value export markets taking
+        priority.
+      </p>
+
+
+      <div style="display:flex;gap:1rem;margin:1.5rem 0;">
+        <div id="ic-export-chart" style="flex:1;min-width:0;"></div>
+        <div id="ic-import-chart" style="flex:1;min-width:0;"></div>
+      </div>
+      <div id="ic-tooltip"
+        style="position:fixed;display:none;pointer-events:none;background:#0f172a;color:#f8fafc;font-size:12px;line-height:1.5;padding:0.6rem 0.8rem;border-radius:8px;max-width:220px;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;">
+      </div>
+
+      <p>The examples above shows a set of 5GW of interconnectors to one neighbouring country. In the left hand example,
+        the 45GW of domestic demand clears at £3/MWh, well below the foreign price of £45/MWh. This means we won't need
+        to import, and we also have enough generation to export to our neighbour. This pushes the final clearing price
+        up to £5/MWh, still below our neighbour's price. The right hand side example shows a time where renewable
+        generation is low: the interconnector sits in merit, and we therefore import to meet domestic demand. The price
+        the interconnector will bid at is slightly higher than the foreign price, to account for losses and any other
+        fees. </p>
+
+      <p>
+        Storage is modelled in a similar way to interconnectors. We set a maximum charge price for each storage type —
+        reflecting
+        the price at which they expect to charge during low-price, high-renewable periods — and derive the discharge
+        bid from that using round-trip efficiency: discharge bid = max charge price ÷ efficiency². A battery with
+        95% one-way efficiency (90.25% round trip) that charges at a maximum of £10/MWh will therefore bid to
+        discharge at around £11/MWh. LDES, assumed to have a 70% one-way efficiency (49% round trip), bids to
+        discharge at around £20/MWh for the same charge price. This means LDES is more selective about when it
+        discharges, reflecting the greater energy cost of its lower round-trip efficiency. We've chosen the maximum
+        charging price fairly arbitrarily: real storage operators will have a range of strategies and expectations for
+        how price will evolve. This should be roughly acceptable for our purposes.
+      </p>
+
+    </div>
+
+    <hr>
+
+    <!-- ── Section 6: Clearing price ── -->
+    <div class="section">
+      <h2>Role of wholesale price</h2>
+      <p>
+        Modelling the price has a usefulness beyond the estimate of wholesale price itself. As you can see from above,
+        the price is essential for understanding the flows of power between countries, and into and out from storage.
+        Whilst our approach has some simplifcations, it can help us understand the dynamics of how the system might
+        operate.
+      </p>
+      <p>
+        We do need to remember that wholesale price is only a portion of the price paid by consumers, particularly with
+        subsidies such as the CfD which guarantee a fixed price to generators. This subsidy will be paid by consumer
+        bills. A CfD dominated system could have average wholesale prices of around £0/MWh (compared to around £80/MWh
+        in 2024), but with bills unchanged. The wholesale price should be thought of as a reflection of balance and
+        supply in the system, and a signal for when to increase demand, rather than a direct signal of consumer costs.
+      </p>
+      <p>
+        A strict reliance on the wholesale price to control generator behaviour could also produce undesirable outcomes.
+        For example, in hours where our neighbours have high wholesale prices, it could make economic sense for our gas
+        generators to run solely for the purposes of export, even if there is low domestic demand. This would increase
+        emissions and make the CP2030 goal harder to achieve.
+      </p>
+
+    </div>
+
+    <hr>
+
+    <!-- ── Section 7: Assumptions and limitations ── -->
+
+
+  </div>
+  <script src="https://d3js.org/d3.v7.min.js"></script>
+  <script>
+    (function () {
+      // Illustrative generation values. Biomass bids at SRMC (no subsidy assumed here).
+      const TECHS = [
+        { label: "Offshore wind", output: 15, price: 0, color: "#0284c7" },
+        { label: "Onshore wind", output: 7, price: 0, color: "#38bdf8" },
+        { label: "Solar", output: 10, price: 0, color: "#d97706" },
+        { label: "Nuclear", output: 3.5, price: 0, color: "#7c3aed" },
+        { label: "Hydro", output: 0.8, price: 10, color: "#059669" },
+        { label: "Biomass", output: 2.6, price: 90, color: "#16a34a" },
+        { label: "Gas (CCGT)", output: 25, price: 80, color: "#dc2626" },
+        { label: "Gas (OCGT)", output: 5, price: 110, color: "#f97316" },
+      ];
+      const TARGET_DEMAND = 45;
+      const SWEEP_MS = 6000, PAUSE_MS = 5000, TOTAL_MS = SWEEP_MS + PAUSE_MS;
+
+      TECHS.sort((a, b) => a.price - b.price);
+      let cum = 0;
+      TECHS.forEach(d => { d.x0 = cum; cum += d.output; d.x1 = cum; });
+
+      const Y_MIN = -10, Y_MAX = 120;
+      const margin = { top: 20, right: 16, bottom: 44, left: 62 };
+      const el = document.getElementById("merit-order-chart");
+      const W = el.clientWidth || 660;
+      const H = 280;
+      const w = W - margin.left - margin.right;
+      const h = H - margin.top - margin.bottom;
+
+      const svg = d3.select("#merit-order-chart").append("svg")
+        .attr("width", W).attr("height", H).style("display", "block");
+      const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+      const xSc = d3.scaleLinear().domain([0, cum]).range([0, w]);
+      const ySc = d3.scaleLinear().domain([Y_MIN, Y_MAX]).range([h, 0]);
+
+      // Grid
+      g.append("g")
+        .call(d3.axisLeft(ySc).ticks(7).tickSize(-w).tickFormat(""))
+        .call(g => g.select(".domain").remove())
+        .call(g => g.selectAll(".tick line")
+          .attr("stroke", "#e2e8f0").attr("stroke-dasharray", "3,3"));
+
+      // Technology blocks
+      TECHS.forEach(d => {
+        g.append("rect")
+          .attr("x", xSc(d.x0))
+          .attr("width", Math.max(1, xSc(d.x1) - xSc(d.x0) - 0.5))
+          .attr("y", ySc(d.price))
+          .attr("height", ySc(Y_MIN) - ySc(d.price))
+          .attr("fill", d.color);
+      });
+
+      // £0 reference line
+      g.append("line")
+        .attr("x1", 0).attr("x2", w)
+        .attr("y1", ySc(0)).attr("y2", ySc(0))
+        .attr("stroke", "#cbd5e1").attr("stroke-width", 1);
+
+      // Animated elements
+      const clearLine = g.append("line")
+        .attr("stroke", "#0f172a").attr("stroke-width", 1.5).attr("stroke-dasharray", "5,4");
+      const clearLabel = g.append("text")
+        .attr("x", 4).style("font-size", "11px").style("fill", "#0f172a").style("font-weight", "600");
+      const demandLine = g.append("line")
+        .attr("y1", 0).attr("y2", h)
+        .attr("stroke", "#0f172a").attr("stroke-width", 1.5).attr("stroke-dasharray", "5,4");
+      const demandLabel = g.append("text")
+        .attr("y", 14).style("font-size", "11px").style("fill", "#0f172a").style("font-weight", "600");
+
+      function clearingPrice(demand) {
+        const t = TECHS.find(d => d.x0 < demand && d.x1 >= demand);
+        return t ? t.price : (demand <= 0 ? null : TECHS[0].price);
+      }
+
+      function update(demand) {
+        const cp = clearingPrice(demand);
+        demandLine.attr("x1", xSc(demand)).attr("x2", xSc(demand));
+        demandLabel.attr("x", xSc(demand) + 5).text(`${demand.toFixed(0)} GW`);
+        if (cp !== null) {
+          clearLine
+            .attr("x1", 0).attr("x2", xSc(demand))
+            .attr("y1", ySc(cp)).attr("y2", ySc(cp));
+          clearLabel.attr("y", ySc(cp) - 5).text(`£${cp}/MWh`);
+        } else {
+          clearLine.attr("x1", 0).attr("x2", 0);
+          clearLabel.text("");
+        }
+      }
+
+      update(0);
+
+      d3.timer(elapsed => {
+        const t = elapsed % TOTAL_MS;
+        const demand = t < SWEEP_MS
+          ? d3.easeCubicInOut(t / SWEEP_MS) * TARGET_DEMAND
+          : TARGET_DEMAND;
+        update(demand);
+      });
+
+      // Axes
+      g.append("g").attr("transform", `translate(0,${h})`)
+        .call(d3.axisBottom(xSc).ticks(8).tickFormat(d => `${d} GW`))
+        .call(g => g.select(".domain").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll("text").style("font-size", "11px").style("fill", "#64748b"));
+      g.append("g")
+        .call(d3.axisLeft(ySc).tickValues([0, 20, 40, 60, 80, 100, 120]).tickFormat(d => `£${d}`))
+        .call(g => g.select(".domain").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll("text").style("font-size", "11px").style("fill", "#64748b"));
+      g.append("text").attr("x", w / 2).attr("y", h + 38).attr("text-anchor", "middle")
+        .style("font-size", "11px").style("fill", "#64748b").text("Cumulative generation (GW)");
+      g.append("text").attr("transform", "rotate(-90)").attr("x", -(h / 2)).attr("y", -48)
+        .attr("text-anchor", "middle").style("font-size", "11px").style("fill", "#64748b")
+        .text("Bid price (£/MWh)");
+
+      // Legend
+      const legend = d3.select("#merit-order-chart").append("div")
+        .style("display", "flex").style("flex-wrap", "wrap")
+        .style("gap", "0.35rem 1rem").style("margin-top", "0.75rem");
+      TECHS.forEach(d => {
+        const item = legend.append("div")
+          .style("display", "flex").style("align-items", "center").style("gap", "0.35rem");
+        item.append("div").style("width", "10px").style("height", "10px")
+          .style("border-radius", "2px").style("background", d.color).style("flex-shrink", "0");
+        item.append("span").style("font-size", "11px").style("color", "#64748b").text(d.label);
+      });
+    })();
+
+
+    // ── Offshore wind bidding by CfD round ───────────────────────────────────
+    (function () {
+      const ROUNDS = [
+        {
+          label: "Renewables Obligation",
+          volume: 6.5,
+          price: -100,
+          color: "#0284c7",
+          tip: "<strong>Renewables Obligation</strong><br>6.5 GW installed<br>~2 ROCs × £50 = ~£100/MWh subsidy<br>No negative pricing rule<br>Bid floor ≈ −£100/MWh",
+        },
+        {
+          label: "CfD Round 1",
+          volume: 1.1,
+          price: -120,
+          color: "#0369a1",
+          tip: "<strong>CfD Round 1 (2014–15)</strong><br>1.1 GW installed<br>Strike price ~£120/MWh<br>No negative pricing rule<br>Bid floor ≈ −£120/MWh",
+        },
+        {
+          label: "CfD Round 2",
+          volume: 3.1,
+          price: -100,
+          color: "#0ea5e9",
+          tip: "<strong>CfD Round 2 (2017)</strong><br>3.1 GW installed<br>Strike price ~£100/MWh<br>No negative pricing rule<br>Bid floor ≈ −£100/MWh",
+        },
+        {
+          label: "CfD Round 3",
+          volume: 5.4,
+          price: -80,
+          color: "#38bdf8",
+          tip: "<strong>CfD Round 3 (2019)</strong><br>5.4 GW installed<br>Strike price ~£80/MWh<br>Limited negative pricing exposure<br>Bid floor ≈ −£80/MWh",
+        },
+        {
+          label: "CfD Round 4+ & Merchant",
+          volume: 47 - 6.5 - 1.1 - 3.1 - 5.4,  // remainder to CP2030 47 GW target
+          price: 0,
+          color: "#7dd3fc",
+          tip: "<strong>CfD Round 4+ & Merchant (2022–)</strong><br>30.9 GW to CP2030 target<br>Strike price ~£45–50/MWh (CfD) or no subsidy (merchant)<br>Strict negative pricing rule / no subsidy<br>Bids at ≈ £0/MWh",
+        },
+      ];
+
+      // Sort by price (most negative first = leftmost/cheapest)
+      ROUNDS.sort((a, b) => a.price - b.price);
+      let cum = 0;
+      ROUNDS.forEach(d => { d.x0 = cum; cum += d.volume; d.x1 = cum; });
+
+      const Y_MIN = -130, Y_MAX = 20;
+      const margin = { top: 20, right: 16, bottom: 44, left: 62 };
+      const el = document.getElementById("wind-rounds-chart");
+      const W = el.clientWidth || 660;
+      const H = 240;
+      const w = W - margin.left - margin.right;
+      const h = H - margin.top - margin.bottom;
+
+      const svg = d3.select("#wind-rounds-chart").append("svg")
+        .attr("width", W).attr("height", H).style("display", "block");
+      const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+      const xSc = d3.scaleLinear().domain([0, cum]).range([0, w]);
+      const ySc = d3.scaleLinear().domain([Y_MIN, Y_MAX]).range([h, 0]);
+
+      // Grid lines
+      g.append("g")
+        .call(d3.axisLeft(ySc).ticks(6).tickSize(-w).tickFormat(""))
+        .call(g => g.select(".domain").remove())
+        .call(g => g.selectAll(".tick line")
+          .attr("stroke", "#e2e8f0").attr("stroke-dasharray", "3,3"));
+
+      const tooltip = document.getElementById("wind-rounds-tooltip");
+
+      // Bars: column from Y_MIN up to bid price, with hover
+      ROUNDS.forEach(d => {
+        g.append("rect")
+          .attr("x", xSc(d.x0))
+          .attr("width", Math.max(1, xSc(d.x1) - xSc(d.x0) - 0.5))
+          .attr("y", ySc(d.price))
+          .attr("height", ySc(Y_MIN) - ySc(d.price))
+          .attr("fill", d.color)
+          .style("cursor", "pointer")
+          .on("mousemove", (event) => {
+            tooltip.innerHTML = d.tip;
+            tooltip.style.display = "block";
+            tooltip.style.left = (event.clientX + 12) + "px";
+            tooltip.style.top = (event.clientY - 10) + "px";
+          })
+          .on("mouseleave", () => { tooltip.style.display = "none"; });
+      });
+
+      // £0 reference line
+      g.append("line")
+        .attr("x1", 0).attr("x2", w)
+        .attr("y1", ySc(0)).attr("y2", ySc(0))
+        .attr("stroke", "#94a3b8").attr("stroke-width", 1);
+
+      g.append("text")
+        .attr("x", w + 3).attr("y", ySc(0))
+        .attr("dy", "0.35em")
+        .style("font-size", "10px").style("fill", "#94a3b8")
+        .text("£0");
+
+      // Axes
+      g.append("g").attr("transform", `translate(0,${h})`)
+        .call(d3.axisBottom(xSc).ticks(5).tickFormat(d => `${d} GW`))
+        .call(g => g.select(".domain").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll("text").style("font-size", "11px").style("fill", "#64748b"));
+
+      g.append("g")
+        .call(d3.axisLeft(ySc).ticks(6).tickFormat(d => `£${d}`))
+        .call(g => g.select(".domain").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll("text").style("font-size", "11px").style("fill", "#64748b"));
+
+      g.append("text")
+        .attr("x", w / 2).attr("y", h + 38)
+        .attr("text-anchor", "middle")
+        .style("font-size", "11px").style("fill", "#64748b")
+        .text("Representative volume (GW)");
+
+      g.append("text")
+        .attr("transform", "rotate(-90)")
+        .attr("x", -(h / 2)).attr("y", -48)
+        .attr("text-anchor", "middle")
+        .style("font-size", "11px").style("fill", "#64748b")
+        .text("Bid price (£/MWh)");
+
+      // Legend
+      const legend = d3.select("#wind-rounds-chart").append("div")
+        .style("display", "flex").style("flex-wrap", "wrap")
+        .style("gap", "0.35rem 1rem").style("margin-top", "0.75rem");
+
+      ROUNDS.forEach(d => {
+        const item = legend.append("div")
+          .style("display", "flex").style("align-items", "center").style("gap", "0.35rem");
+        item.append("div")
+          .style("width", "10px").style("height", "10px")
+          .style("border-radius", "2px").style("background", d.color).style("flex-shrink", "0");
+        item.append("span")
+          .style("font-size", "11px").style("color", "#64748b")
+          .text(d.label);
+      });
+    })();
+    // ── Bid bands by subsidy scheme (offshore wind) ───────────────────────────
+    (function () {
+      // Normal quantile function (Acklam's rational approximation)
+      function normPpf(p) {
+        const a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+          1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00];
+        const b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+          6.680131188771972e+01, -1.328068155288572e+01];
+        const c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+        -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00];
+        const d = [7.784695709041462e-03, 3.224671290700398e-01,
+          2.445134137142996e+00, 3.754408661907416e+00];
+        const pLow = 0.02425, pHigh = 1 - pLow;
+        let q, r;
+        if (p < pLow) {
+          q = Math.sqrt(-2 * Math.log(p));
+          return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+        } else if (p <= pHigh) {
+          q = p - 0.5; r = q * q;
+          return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
+            (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+        } else {
+          q = Math.sqrt(-2 * Math.log(1 - p));
+          return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+        }
+      }
+
+      function normalBands(capacityGW, mean, sigma, nBands) {
+        const bandGW = capacityGW / nBands;
+        return Array.from({ length: nBands }, (_, i) => ({
+          gw: bandGW,
+          price: mean + sigma * normPpf((i + 0.5) / nBands),
+        }));
+      }
+
+      // Mirror cp2030price.py: OFFSHORE_RO_BID=(-100,5), OFFSHORE_CfD_BID=(0,5), N_BANDS=20
+      const RO_CAP = 6.5, CfD_CAP = 47 - 6.5, N_BANDS = 20;
+      const roBands = normalBands(RO_CAP, -100, 5, N_BANDS).sort((a, b) => a.price - b.price);
+      const cfdBands = normalBands(CfD_CAP, 0, 5, N_BANDS).sort((a, b) => a.price - b.price);
+
+      let cum = 0;
+      [...roBands, ...cfdBands].forEach(d => { d.x0 = cum; cum += d.gw; d.x1 = cum; });
+
+      const Y_MIN = -120, Y_MAX = 25;
+      const margin = { top: 32, right: 16, bottom: 44, left: 62 };
+      const el = document.getElementById("bid-bands-chart");
+      const W = el.clientWidth || 660;
+      const H = 280;
+      const w = W - margin.left - margin.right;
+      const h = H - margin.top - margin.bottom;
+
+      const svg = d3.select("#bid-bands-chart").append("svg")
+        .attr("width", W).attr("height", H).style("display", "block");
+      const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+      const xSc = d3.scaleLinear().domain([0, 47]).range([0, w]);
+      const ySc = d3.scaleLinear().domain([Y_MIN, Y_MAX]).range([h, 0]);
+
+      // Grid lines
+      g.append("g")
+        .call(d3.axisLeft(ySc).ticks(7).tickSize(-w).tickFormat(""))
+        .call(g => g.select(".domain").remove())
+        .call(g => g.selectAll(".tick line")
+          .attr("stroke", "#e2e8f0").attr("stroke-dasharray", "3,3"));
+
+      const tooltip = document.getElementById("bid-bands-tooltip");
+
+      // RO bands
+      roBands.forEach(d => {
+        g.append("rect")
+          .attr("x", xSc(d.x0))
+          .attr("width", Math.max(1, xSc(d.x1) - xSc(d.x0) - 0.5))
+          .attr("y", ySc(d.price))
+          .attr("height", ySc(Y_MIN) - ySc(d.price))
+          .attr("fill", "#0284c7")
+          .style("cursor", "pointer")
+          .on("mousemove", event => {
+            tooltip.innerHTML = `<strong>Renewables Obligation</strong><br>Bid: £${d.price.toFixed(1)}/MWh`;
+            tooltip.style.display = "block";
+            tooltip.style.left = (event.clientX + 12) + "px";
+            tooltip.style.top = (event.clientY - 10) + "px";
+          })
+          .on("mouseleave", () => { tooltip.style.display = "none"; });
+      });
+
+      // CfD / Merchant bands
+      cfdBands.forEach(d => {
+        g.append("rect")
+          .attr("x", xSc(d.x0))
+          .attr("width", Math.max(1, xSc(d.x1) - xSc(d.x0) - 0.5))
+          .attr("y", ySc(d.price))
+          .attr("height", ySc(Y_MIN) - ySc(d.price))
+          .attr("fill", "#0284c7")
+          .style("cursor", "pointer")
+          .on("mousemove", event => {
+            tooltip.innerHTML = `<strong>CfD / Merchant</strong><br>Bid: £${d.price.toFixed(1)}/MWh`;
+            tooltip.style.display = "block";
+            tooltip.style.left = (event.clientX + 12) + "px";
+            tooltip.style.top = (event.clientY - 10) + "px";
+          })
+          .on("mouseleave", () => { tooltip.style.display = "none"; });
+      });
+
+      // Divider between sections
+      g.append("line")
+        .attr("x1", xSc(RO_CAP)).attr("x2", xSc(RO_CAP))
+        .attr("y1", 0).attr("y2", h)
+        .attr("stroke", "#94a3b8").attr("stroke-width", 1).attr("stroke-dasharray", "4,3");
+
+      // Section labels
+      g.append("text")
+        .attr("x", xSc(RO_CAP / 2)).attr("y", -8)
+        .attr("text-anchor", "middle")
+        .style("font-size", "11px").style("fill", "#0284c7").style("font-weight", "600")
+        .text(`Renewables Obligation (${RO_CAP} GW)`);
+
+      g.append("text")
+        .attr("x", xSc(RO_CAP + CfD_CAP / 2)).attr("y", -8)
+        .attr("text-anchor", "middle")
+        .style("font-size", "11px").style("fill", "#0284c7").style("font-weight", "600")
+        .text(`CfD / Merchant (${CfD_CAP.toFixed(1)} GW)`);
+
+      // £0 reference line
+      g.append("line")
+        .attr("x1", 0).attr("x2", w)
+        .attr("y1", ySc(0)).attr("y2", ySc(0))
+        .attr("stroke", "#94a3b8").attr("stroke-width", 1);
+
+      // Axes
+      g.append("g").attr("transform", `translate(0,${h})`)
+        .call(d3.axisBottom(xSc).ticks(8).tickFormat(d => `${d} GW`))
+        .call(g => g.select(".domain").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll("text").style("font-size", "11px").style("fill", "#64748b"));
+
+      g.append("g")
+        .call(d3.axisLeft(ySc).ticks(7).tickFormat(d => `£${d}`))
+        .call(g => g.select(".domain").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll("text").style("font-size", "11px").style("fill", "#64748b"));
+
+      g.append("text")
+        .attr("x", w / 2).attr("y", h + 38)
+        .attr("text-anchor", "middle")
+        .style("font-size", "11px").style("fill", "#64748b")
+        .text("Cumulative capacity (GW)");
+
+      g.append("text")
+        .attr("transform", "rotate(-90)")
+        .attr("x", -(h / 2)).attr("y", -48)
+        .attr("text-anchor", "middle")
+        .style("font-size", "11px").style("fill", "#64748b")
+        .text("Bid price (£/MWh)");
+    })();
+
+    // ── Banded merit order (all technologies) ────────────────────────────────
+    (function () {
+      // Reuse normPpf from the closure above — define it again locally
+      function normPpf(p) {
+        const a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+          1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00];
+        const b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+          6.680131188771972e+01, -1.328068155288572e+01];
+        const c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+        -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00];
+        const d = [7.784695709041462e-03, 3.224671290700398e-01,
+          2.445134137142996e+00, 3.754408661907416e+00];
+        const pLow = 0.02425, pHigh = 1 - pLow;
+        let q, r;
+        if (p < pLow) {
+          q = Math.sqrt(-2 * Math.log(p));
+          return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+        } else if (p <= pHigh) {
+          q = p - 0.5; r = q * q;
+          return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
+            (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+        } else {
+          q = Math.sqrt(-2 * Math.log(1 - p));
+          return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+        }
+      }
+
+      function bands(gw, mean, sigma, label, color, n = 20) {
+        const bw = gw / n;
+        return Array.from({ length: n }, (_, i) => ({
+          gw: bw,
+          price: mean + sigma * normPpf((i + 0.5) / n),
+          label, color,
+        }));
+      }
+
+      // Illustrative generation for a real settlement period.
+      // Fractions and bid params mirror cp2030price.py.
+      const OFFSHORE = 15, ONSHORE = 7, SOLAR = 10, NUCLEAR = 3.5,
+        HYDRO = 0.8, BIOMASS = 2.6, CCGT = 25, OCGT = 5;
+
+      // Gas SRMC at default 70p/therm, £50/tonne carbon
+      const ccgtMean = (0.7 / 0.029305) / 0.52 + 0.37 * 50 + 3;   // ≈ £67/MWh
+      const ocgtMean = (0.7 / 0.029305) / 0.40 + 0.48 * 50 + 5;   // ≈ £89/MWh
+
+      const allBands = [
+        ...bands(OFFSHORE * 0.140, -100, 5, "Offshore wind (RO)", "#0284c7"),
+        ...bands(OFFSHORE * 0.860, 0, 5, "Offshore wind (CfD)", "#0284c7"),
+        ...bands(ONSHORE * 0.439, -50, 12, "Onshore wind (RO)", "#38bdf8"),
+        ...bands(ONSHORE * 0.561, 0, 5, "Onshore wind (CfD)", "#38bdf8"),
+        ...bands(SOLAR * 0.348, -10, 8, "Solar (legacy FiT/RO)", "#d97706"),
+        ...bands(SOLAR * 0.652, 0, 5, "Solar (CfD)", "#d97706"),
+        ...bands(NUCLEAR, 0, 3, "Nuclear", "#7c3aed", 4),
+        ...bands(HYDRO, 8, 5, "Hydro", "#059669"),
+        ...bands(BIOMASS, 0, 5, "Biomass (CfD)", "#16a34a", 4),
+        ...bands(CCGT, ccgtMean, 8, "Gas (CCGT)", "#dc2626"),
+        ...bands(OCGT, ocgtMean, 10, "Gas (OCGT)", "#f97316"),
+      ].sort((a, b) => a.price - b.price);
+
+      let cum = 0;
+      allBands.forEach(d => { d.x0 = cum; cum += d.gw; d.x1 = cum; });
+
+      const TARGET_DEMAND = 45;
+      const SWEEP_MS = 6000, PAUSE_MS = 5000, TOTAL_MS = SWEEP_MS + PAUSE_MS;
+
+      const Y_MIN = -120, Y_MAX = 110;
+      const margin = { top: 20, right: 16, bottom: 44, left: 62 };
+      const el = document.getElementById("banded-merit-chart");
+      const W = el.clientWidth || 660;
+      const H = 300;
+      const w = W - margin.left - margin.right;
+      const h = H - margin.top - margin.bottom;
+
+      const svg = d3.select("#banded-merit-chart").append("svg")
+        .attr("width", W).attr("height", H).style("display", "block");
+      const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+      const xSc = d3.scaleLinear().domain([0, cum]).range([0, w]);
+      const ySc = d3.scaleLinear().domain([Y_MIN, Y_MAX]).range([h, 0]);
+
+      // Grid lines
+      g.append("g")
+        .call(d3.axisLeft(ySc).ticks(8).tickSize(-w).tickFormat(""))
+        .call(g => g.select(".domain").remove())
+        .call(g => g.selectAll(".tick line")
+          .attr("stroke", "#e2e8f0").attr("stroke-dasharray", "3,3"));
+
+      const tooltip = document.getElementById("banded-merit-tooltip");
+
+      // Draw bands
+      allBands.forEach(d => {
+        g.append("rect")
+          .attr("x", xSc(d.x0))
+          .attr("width", Math.max(0.5, xSc(d.x1) - xSc(d.x0)))
+          .attr("y", ySc(d.price))
+          .attr("height", ySc(Y_MIN) - ySc(d.price))
+          .attr("fill", d.color)
+          .style("cursor", "pointer")
+          .on("mousemove", event => {
+            tooltip.innerHTML = `<strong>${d.label}</strong><br>Bid: £${d.price.toFixed(1)}/MWh`;
+            tooltip.style.display = "block";
+            tooltip.style.left = (event.clientX + 12) + "px";
+            tooltip.style.top = (event.clientY - 10) + "px";
+          })
+          .on("mouseleave", () => { tooltip.style.display = "none"; });
+      });
+
+      // £0 reference line
+      g.append("line")
+        .attr("x1", 0).attr("x2", w)
+        .attr("y1", ySc(0)).attr("y2", ySc(0))
+        .attr("stroke", "#cbd5e1").attr("stroke-width", 1);
+
+      // Animated elements
+      const clearLine = g.append("line")
+        .attr("stroke", "#0f172a").attr("stroke-width", 1.5).attr("stroke-dasharray", "5,4");
+      const clearLabel = g.append("text")
+        .attr("x", 4).style("font-size", "11px").style("fill", "#0f172a").style("font-weight", "600");
+      const demandLine = g.append("line")
+        .attr("y1", 0).attr("y2", h)
+        .attr("stroke", "#0f172a").attr("stroke-width", 1.5).attr("stroke-dasharray", "5,4");
+      const demandLabel = g.append("text")
+        .attr("y", 14).style("font-size", "11px").style("fill", "#0f172a").style("font-weight", "600");
+
+      function clearingPrice(demand) {
+        const t = allBands.find(d => d.x0 < demand && d.x1 >= demand);
+        return t ? t.price : (demand <= 0 ? null : allBands[0].price);
+      }
+
+      function update(demand) {
+        const cp = clearingPrice(demand);
+        demandLine.attr("x1", xSc(demand)).attr("x2", xSc(demand));
+        demandLabel.attr("x", xSc(demand) + 5).text(`${demand.toFixed(0)} GW`);
+        if (cp !== null) {
+          clearLine
+            .attr("x1", 0).attr("x2", xSc(demand))
+            .attr("y1", ySc(cp)).attr("y2", ySc(cp));
+          clearLabel.attr("y", ySc(cp) - 5).text(`£${cp.toFixed(0)}/MWh`);
+        } else {
+          clearLine.attr("x1", 0).attr("x2", 0);
+          clearLabel.text("");
+        }
+      }
+
+      update(0);
+
+      d3.timer(elapsed => {
+        const t = elapsed % TOTAL_MS;
+        const demand = t < SWEEP_MS
+          ? d3.easeCubicInOut(t / SWEEP_MS) * TARGET_DEMAND
+          : TARGET_DEMAND;
+        update(demand);
+      });
+
+      // Axes
+      g.append("g").attr("transform", `translate(0,${h})`)
+        .call(d3.axisBottom(xSc).ticks(8).tickFormat(d => `${d} GW`))
+        .call(g => g.select(".domain").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll("text").style("font-size", "11px").style("fill", "#64748b"));
+
+      g.append("g")
+        .call(d3.axisLeft(ySc).ticks(8).tickFormat(d => `£${d}`))
+        .call(g => g.select(".domain").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0"))
+        .call(g => g.selectAll("text").style("font-size", "11px").style("fill", "#64748b"));
+
+      g.append("text")
+        .attr("x", w / 2).attr("y", h + 38)
+        .attr("text-anchor", "middle")
+        .style("font-size", "11px").style("fill", "#64748b")
+        .text("Cumulative generation (GW)");
+
+      g.append("text")
+        .attr("transform", "rotate(-90)")
+        .attr("x", -(h / 2)).attr("y", -48)
+        .attr("text-anchor", "middle")
+        .style("font-size", "11px").style("fill", "#64748b")
+        .text("Bid price (£/MWh)");
+
+      // Legend — one entry per unique technology colour
+      const seen = new Set();
+      const legendItems = allBands.filter(d => {
+        const key = d.color + d.label.split(" (")[0];
+        if (seen.has(key)) return false;
+        seen.add(key);
+        return true;
+      }).map(d => ({ label: d.label.split(" (")[0], color: d.color }))
+        .filter((d, i, arr) => arr.findIndex(x => x.color === d.color) === i);
+
+      const legend = d3.select("#banded-merit-chart").append("div")
+        .style("display", "flex").style("flex-wrap", "wrap")
+        .style("gap", "0.35rem 1rem").style("margin-top", "0.75rem");
+
+      legendItems.forEach(d => {
+        const item = legend.append("div")
+          .style("display", "flex").style("align-items", "center").style("gap", "0.35rem");
+        item.append("div")
+          .style("width", "10px").style("height", "10px")
+          .style("border-radius", "2px").style("background", d.color).style("flex-shrink", "0");
+        item.append("span")
+          .style("font-size", "11px").style("color", "#64748b").text(d.label);
+      });
+    })();
+
+    // ── Side-by-side scenarios: high vs low renewables ───────────────────────
+    (function () {
+      function normPpf(p) {
+        const a = [-3.969683028665376e+01, 2.209460984245205e+02, -2.759285104469687e+02,
+          1.383577518672690e+02, -3.066479806614716e+01, 2.506628277459239e+00];
+        const b = [-5.447609879822406e+01, 1.615858368580409e+02, -1.556989798598866e+02,
+          6.680131188771972e+01, -1.328068155288572e+01];
+        const c = [-7.784894002430293e-03, -3.223964580411365e-01, -2.400758277161838e+00,
+        -2.549732539343734e+00, 4.374664141464968e+00, 2.938163982698783e+00];
+        const d = [7.784695709041462e-03, 3.224671290700398e-01,
+          2.445134137142996e+00, 3.754408661907416e+00];
+        const pLow = 0.02425, pHigh = 1 - pLow;
+        let q, r;
+        if (p < pLow) {
+          q = Math.sqrt(-2 * Math.log(p));
+          return (((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+        } else if (p <= pHigh) {
+          q = p - 0.5; r = q * q;
+          return (((((a[0] * r + a[1]) * r + a[2]) * r + a[3]) * r + a[4]) * r + a[5]) * q /
+            (((((b[0] * r + b[1]) * r + b[2]) * r + b[3]) * r + b[4]) * r + 1);
+        } else {
+          q = Math.sqrt(-2 * Math.log(1 - p));
+          return -(((((c[0] * q + c[1]) * q + c[2]) * q + c[3]) * q + c[4]) * q + c[5]) /
+            ((((d[0] * q + d[1]) * q + d[2]) * q + d[3]) * q + 1);
+        }
+      }
+
+      function makeBands(n, gw, mean, sigma, label, color) {
+        const bw = gw / n;
+        return Array.from({ length: n }, (_, i) => ({
+          gw: bw, price: mean + sigma * normPpf((i + 0.5) / n), label, color,
+        }));
+      }
+
+      const ccgtMean = (0.7 / 0.029305) / 0.52 + 0.37 * 50 + 3;
+      const ocgtMean = (0.7 / 0.029305) / 0.40 + 0.48 * 50 + 5;
+      const N = 5; // 1/4 of 20
+
+      function buildStack(OFFSHORE, ONSHORE, SOLAR) {
+        return [
+          ...makeBands(N, OFFSHORE * 0.140, -100, 5, "Offshore wind (RO)", "#0284c7"),
+          ...makeBands(N, OFFSHORE * 0.860, 0, 5, "Offshore wind (CfD)", "#0284c7"),
+          ...makeBands(N, ONSHORE * 0.439, -50, 12, "Onshore wind (RO)", "#38bdf8"),
+          ...makeBands(N, ONSHORE * 0.561, 0, 5, "Onshore wind (CfD)", "#38bdf8"),
+          ...makeBands(N, SOLAR * 0.348, -10, 8, "Solar (legacy)", "#d97706"),
+          ...makeBands(N, SOLAR * 0.652, 0, 5, "Solar (CfD)", "#d97706"),
+          ...makeBands(1, 3.5, 0, 3, "Nuclear", "#7c3aed"),
+          ...makeBands(N, 0.8, 8, 5, "Hydro", "#059669"),
+          ...makeBands(1, 2.6, 0, 5, "Biomass (CfD)", "#16a34a"),
+          ...makeBands(N, 25, ccgtMean, 8, "Gas (CCGT)", "#dc2626"),
+          ...makeBands(N, 10, ocgtMean, 10, "Gas (OCGT)", "#f97316"),
+        ].sort((a, b) => a.price - b.price);
+      }
+
+      const TARGET_DEMAND = 45;
+      const SWEEP_MS = 6000, PAUSE_MS = 5000, TOTAL_MS = SWEEP_MS + PAUSE_MS;
+      const Y_MIN = -120, Y_MAX = 110;
+      const tooltip = document.getElementById("scenario-tooltip");
+
+      function drawScenario(elementId, title, OFFSHORE, ONSHORE, SOLAR) {
+        const allBands = buildStack(OFFSHORE, ONSHORE, SOLAR);
+        let cum = 0;
+        allBands.forEach(d => { d.x0 = cum; cum += d.gw; d.x1 = cum; });
+
+        const el = document.getElementById(elementId);
+        const titleDiv = document.createElement("div");
+        titleDiv.className = "chart-title";
+        titleDiv.textContent = title;
+        el.appendChild(titleDiv);
+
+        const margin = { top: 16, right: 12, bottom: 40, left: 52 };
+        const W = el.clientWidth || 310;
+        const H = 260;
+        const w = W - margin.left - margin.right;
+        const h = H - margin.top - margin.bottom;
+
+        const svg = d3.select(`#${elementId}`).append("svg")
+          .attr("width", W).attr("height", H).style("display", "block");
+        const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+        const xSc = d3.scaleLinear().domain([0, cum]).range([0, w]);
+        const ySc = d3.scaleLinear().domain([Y_MIN, Y_MAX]).range([h, 0]);
+
+        g.append("g")
+          .call(d3.axisLeft(ySc).ticks(7).tickSize(-w).tickFormat(""))
+          .call(g => g.select(".domain").remove())
+          .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0").attr("stroke-dasharray", "3,3"));
+
+        allBands.forEach(d => {
+          g.append("rect")
+            .attr("x", xSc(d.x0))
+            .attr("width", Math.max(0.5, xSc(d.x1) - xSc(d.x0)))
+            .attr("y", ySc(d.price))
+            .attr("height", ySc(Y_MIN) - ySc(d.price))
+            .attr("fill", d.color)
+            .style("cursor", "pointer")
+            .on("mousemove", event => {
+              tooltip.innerHTML = `<strong>${d.label}</strong><br>Bid: £${d.price.toFixed(1)}/MWh`;
+              tooltip.style.display = "block";
+              tooltip.style.left = (event.clientX + 12) + "px";
+              tooltip.style.top = (event.clientY - 10) + "px";
+            })
+            .on("mouseleave", () => { tooltip.style.display = "none"; });
+        });
+
+        g.append("line").attr("x1", 0).attr("x2", w)
+          .attr("y1", ySc(0)).attr("y2", ySc(0))
+          .attr("stroke", "#cbd5e1").attr("stroke-width", 1);
+
+        const clearLine = g.append("line")
+          .attr("stroke", "#0f172a").attr("stroke-width", 1.5).attr("stroke-dasharray", "5,4");
+        const clearLabel = g.append("text")
+          .attr("x", 4).style("font-size", "10px").style("fill", "#0f172a").style("font-weight", "600");
+        const demandLine = g.append("line")
+          .attr("y1", 0).attr("y2", h)
+          .attr("stroke", "#0f172a").attr("stroke-width", 1.5).attr("stroke-dasharray", "5,4");
+        const demandLabel = g.append("text")
+          .attr("y", 13).style("font-size", "10px").style("fill", "#0f172a").style("font-weight", "600");
+
+        function cp(demand) {
+          const t = allBands.find(d => d.x0 < demand && d.x1 >= demand);
+          return t ? t.price : (demand <= 0 ? null : allBands[0].price);
+        }
+
+        g.append("g").attr("transform", `translate(0,${h})`)
+          .call(d3.axisBottom(xSc).ticks(5).tickFormat(d => `${d}GW`))
+          .call(g => g.select(".domain").attr("stroke", "#e2e8f0"))
+          .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0"))
+          .call(g => g.selectAll("text").style("font-size", "10px").style("fill", "#64748b"));
+        g.append("g")
+          .call(d3.axisLeft(ySc).ticks(7).tickFormat(d => `£${d}`))
+          .call(g => g.select(".domain").attr("stroke", "#e2e8f0"))
+          .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0"))
+          .call(g => g.selectAll("text").style("font-size", "10px").style("fill", "#64748b"));
+
+        return function update(demand) {
+          const price = cp(demand);
+          demandLine.attr("x1", xSc(demand)).attr("x2", xSc(demand));
+          demandLabel.attr("x", xSc(demand) + 4).text(`${demand.toFixed(0)} GW`);
+          if (price !== null) {
+            clearLine.attr("x1", 0).attr("x2", xSc(demand))
+              .attr("y1", ySc(price)).attr("y2", ySc(price));
+            clearLabel.attr("y", ySc(price) - 4).text(`£${price.toFixed(0)}/MWh`);
+          } else {
+            clearLine.attr("x1", 0).attr("x2", 0);
+            clearLabel.text("");
+          }
+        };
+      }
+
+      const updateHigh = drawScenario("scenario-high-chart", "High renewable output (offshore 35 GW, onshore 10 GW, solar 8 GW)", 35, 10, 8);
+      const updateLow = drawScenario("scenario-low-chart", "Low renewable output (offshore 4 GW, onshore 2 GW, solar 2 GW)", 4, 2, 2);
+
+      d3.timer(elapsed => {
+        const t = elapsed % TOTAL_MS;
+        const demand = t < SWEEP_MS
+          ? d3.easeCubicInOut(t / SWEEP_MS) * TARGET_DEMAND
+          : TARGET_DEMAND;
+        updateHigh(demand);
+        updateLow(demand);
+      });
+    })();
+
+    // ── Interconnector: export vs import scenarios ───────────────────────────
+    (function () {
+      const Y_MIN = -8, Y_MAX = 80;
+      const FOREIGN_PRICE = 45, IC_BID = 50, GAS_PRICE = 67;
+      const tooltip = document.getElementById("ic-tooltip");
+
+      // Left chart: ~61 GW of cheap generation so even at demand=50 (with 5 GW
+      // export) there is 11 GW of renewables left to spare — IC never dispatched.
+      // Small price offsets between techs so clearing price varies as demand sweeps.
+      const LEFT = [
+        { label: "Offshore wind", gw: 35, price: -3, color: "#0284c7" },
+        { label: "Onshore wind", gw: 8, price: -1, color: "#38bdf8" },
+        { label: "Solar", gw: 5, price: 3, color: "#d97706" },
+        { label: "Nuclear", gw: 3.5, price: 5, color: "#7c3aed" },
+        { label: "Biomass", gw: 2.6, price: 7, color: "#16a34a" },
+        { label: "Hydro", gw: 7, price: 10, color: "#059669" },
+        { label: "Interconnector", gw: 5, price: IC_BID, color: "#164e63" },
+        { label: "Gas (CCGT)", gw: 15, price: GAS_PRICE, color: "#dc2626" },
+      ].sort((a, b) => a.price - b.price);
+
+      // Right chart: only ~19 GW renewables — IC + gas both needed.
+      const RIGHT = [
+        { label: "Offshore wind", gw: 8, price: -3, color: "#0284c7" },
+        { label: "Onshore wind", gw: 3, price: -1, color: "#38bdf8" },
+        { label: "Solar", gw: 2, price: 3, color: "#d97706" },
+        { label: "Nuclear", gw: 3.5, price: 5, color: "#7c3aed" },
+        { label: "Biomass", gw: 2, price: 7, color: "#16a34a" },
+        { label: "Hydro", gw: 0.5, price: 10, color: "#059669" },
+        { label: "Interconnector", gw: 5, price: IC_BID, color: "#164e63" },
+        { label: "Gas (CCGT)", gw: 25, price: GAS_PRICE, color: "#dc2626" },
+      ].sort((a, b) => a.price - b.price);
+
+      function layoutStack(techs) {
+        let cum = 0;
+        techs.forEach(d => { d.x0 = cum; cum += d.gw; d.x1 = cum; });
+        return cum;
+      }
+
+      const leftTotal = layoutStack(LEFT);
+      const rightTotal = layoutStack(RIGHT);
+
+      function drawChart(elementId, title, techs, totalGW) {
+        const el = document.getElementById(elementId);
+        const titleDiv = document.createElement("div");
+        titleDiv.className = "chart-title";
+        titleDiv.textContent = title;
+        el.appendChild(titleDiv);
+
+        const margin = { top: 24, right: 12, bottom: 40, left: 52 };
+        const W = el.clientWidth || 310;
+        const H = 250;
+        const w = W - margin.left - margin.right;
+        const h = H - margin.top - margin.bottom;
+
+        const svg = d3.select(`#${elementId}`).append("svg")
+          .attr("width", W).attr("height", H).style("display", "block");
+        const g = svg.append("g").attr("transform", `translate(${margin.left},${margin.top})`);
+
+        const xSc = d3.scaleLinear().domain([0, totalGW]).range([0, w]);
+        const ySc = d3.scaleLinear().domain([Y_MIN, Y_MAX]).range([h, 0]);
+
+        // Grid
+        g.append("g")
+          .call(d3.axisLeft(ySc).ticks(6).tickSize(-w).tickFormat(""))
+          .call(g => g.select(".domain").remove())
+          .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0").attr("stroke-dasharray", "3,3"));
+
+        // Tech blocks — keep a ref to the IC rect for optional fading
+        let icRect = null;
+        techs.forEach(d => {
+          const rect = g.append("rect")
+            .attr("x", xSc(d.x0))
+            .attr("width", Math.max(1, xSc(d.x1) - xSc(d.x0) - 0.5))
+            .attr("y", ySc(d.price))
+            .attr("height", ySc(Y_MIN) - ySc(d.price))
+            .attr("fill", d.color)
+            .style("cursor", "pointer")
+            .on("mousemove", event => {
+              const label = d.label === "Interconnector"
+                ? `<strong>Interconnector</strong><br>Import bid: £${d.price}/MWh<br>Foreign price: £${FOREIGN_PRICE}/MWh`
+                : `<strong>${d.label}</strong><br>Bid: £${d.price}/MWh`;
+              tooltip.innerHTML = label;
+              tooltip.style.display = "block";
+              tooltip.style.left = (event.clientX + 12) + "px";
+              tooltip.style.top = (event.clientY - 10) + "px";
+            })
+            .on("mouseleave", () => { tooltip.style.display = "none"; });
+          if (d.label === "Interconnector") icRect = rect;
+        });
+
+        // Foreign price reference line — full width, dark grey
+        g.append("line")
+          .attr("x1", 0).attr("x2", w)
+          .attr("y1", ySc(FOREIGN_PRICE)).attr("y2", ySc(FOREIGN_PRICE))
+          .attr("stroke", "#475569").attr("stroke-width", 1.5).attr("stroke-dasharray", "5,4");
+        g.append("text")
+          .attr("x", 4).attr("y", ySc(FOREIGN_PRICE) - 4)
+          .style("font-size", "8.5px").style("fill", "#475569").style("font-weight", "600")
+          .text(`Foreign price £${FOREIGN_PRICE}/MWh`);
+
+        // £0 reference
+        g.append("line").attr("x1", 0).attr("x2", w)
+          .attr("y1", ySc(0)).attr("y2", ySc(0))
+          .attr("stroke", "#cbd5e1").attr("stroke-width", 1);
+
+        // Axes
+        g.append("g").attr("transform", `translate(0,${h})`)
+          .call(d3.axisBottom(xSc).ticks(5).tickFormat(d => `${d}GW`))
+          .call(g => g.select(".domain").attr("stroke", "#e2e8f0"))
+          .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0"))
+          .call(g => g.selectAll("text").style("font-size", "10px").style("fill", "#64748b"));
+        g.append("g")
+          .call(d3.axisLeft(ySc).ticks(6).tickFormat(d => `£${d}`))
+          .call(g => g.select(".domain").attr("stroke", "#e2e8f0"))
+          .call(g => g.selectAll(".tick line").attr("stroke", "#e2e8f0"))
+          .call(g => g.selectAll("text").style("font-size", "10px").style("fill", "#64748b"));
+
+        // Animated elements (drawn last so they sit on top)
+        const clearLine = g.append("line")
+          .attr("stroke", "#0f172a").attr("stroke-width", 1.5).attr("stroke-dasharray", "5,4");
+        const clearLabel = g.append("text")
+          .attr("x", 4).style("font-size", "10px").style("fill", "#0f172a").style("font-weight", "600");
+        const demandLine = g.append("line")
+          .attr("y1", 0).attr("y2", h)
+          .attr("stroke", "#0f172a").attr("stroke-width", 1.5).attr("stroke-dasharray", "5,4");
+        const demandLabel = g.append("text")
+          .attr("y", 13).style("font-size", "10px").style("fill", "#0f172a").style("font-weight", "600");
+
+        function cpAt(demand) {
+          const t = techs.find(d => d.x0 < demand && d.x1 >= demand);
+          return t ? t.price : (demand <= 0 ? null : techs[0].price);
+        }
+
+        // Legend
+        const seen = new Set();
+        const legend = d3.select(`#${elementId}`).append("div")
+          .style("display", "flex").style("flex-wrap", "wrap")
+          .style("gap", "0.25rem 0.75rem").style("margin-top", "0.5rem");
+        techs.forEach(d => {
+          if (seen.has(d.color)) return; seen.add(d.color);
+          const item = legend.append("div").style("display", "flex").style("align-items", "center").style("gap", "0.3rem");
+          item.append("div").style("width", "9px").style("height", "9px").style("border-radius", "2px")
+            .style("background", d.color).style("flex-shrink", "0");
+          item.append("span").style("font-size", "10px").style("color", "#64748b").text(d.label);
+        });
+
+        return function update(demand, label, icOpacity = 1) {
+          const cp = cpAt(demand);
+          demandLine.attr("x1", xSc(demand)).attr("x2", xSc(demand));
+          demandLabel.attr("x", xSc(demand) + 4).text(label || `${demand.toFixed(0)} GW`);
+          if (cp !== null) {
+            clearLine.attr("x1", 0).attr("x2", xSc(demand))
+              .attr("y1", ySc(cp)).attr("y2", ySc(cp));
+            clearLabel.attr("y", ySc(cp) - 4).text(`£${cp.toFixed(0)}/MWh`);
+          } else {
+            clearLine.attr("x1", 0).attr("x2", 0);
+            clearLabel.text("");
+          }
+          if (icRect) icRect.attr("opacity", icOpacity);
+        };
+      }
+
+      const updateLeft = drawChart("ic-export-chart", "High renewables — GB exports", LEFT, leftTotal);
+      const updateRight = drawChart("ic-import-chart", "Low renewables — GB imports", RIGHT, rightTotal);
+
+      // Left: sweep to 45 GW (clears at £3, IC unused), pause, extend to 50 GW
+      // (export demand), clearing price stays at £3 — plenty of renewables still spare.
+      const L_S1 = 5000, L_P1 = 3000, L_S2 = 2000, L_P2 = 4000, L_TOTAL = 14000;
+      // Right: simple sweep to 45 GW, clears in gas at £67.
+      const R_SWEEP = 6000, R_PAUSE = 5000, R_TOTAL = 11000;
+
+      updateLeft(0); updateRight(0);
+
+      const FADE_MS = 700; // fade duration at start of pause
+
+      d3.timer(elapsed => {
+        const lt = elapsed % L_TOTAL;
+        let ld, ll, icOpacity;
+        if (lt < L_S1) {
+          ld = d3.easeCubicInOut(lt / L_S1) * 45;
+          ll = `${ld.toFixed(0)} GW`;
+          icOpacity = 1;
+        } else if (lt < L_S1 + FADE_MS) {
+          ld = 45; ll = "45 GW (domestic)";
+          icOpacity = 1 - 0.8 * ((lt - L_S1) / FADE_MS); // 1 → 0.2
+        } else if (lt < L_S1 + L_P1) {
+          ld = 45; ll = "45 GW (domestic)";
+          icOpacity = 0.2;
+        } else if (lt < L_S1 + L_P1 + L_S2) {
+          ld = 45 + d3.easeCubicInOut((lt - L_S1 - L_P1) / L_S2) * 5;
+          ll = `${ld.toFixed(0)} GW`;
+          icOpacity = 0.2;
+        } else {
+          ld = 50; ll = "50 GW (incl. export)";
+          icOpacity = 0.2;
+        }
+        updateLeft(ld, ll, icOpacity);
+
+        const rt = elapsed % R_TOTAL;
+        const rd = rt < R_SWEEP ? d3.easeCubicInOut(rt / R_SWEEP) * 45 : 45;
+        updateRight(rd, `${rd.toFixed(0)} GW`);
+      });
+    })();
+  </script>
+</body>
+
+</html>

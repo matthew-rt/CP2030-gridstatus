@@ -1,0 +1,1173 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CP2030 Grid Replay</title>
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --surface: #ffffff;
+      --border: #e2e8f0;
+      --track: #e2e8f0;
+      --text: #0f172a;
+      --muted: #64748b;
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 15px;
+      line-height: 1.5;
+      padding: 1.5rem 1rem 3rem;
+    }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    /* ── Header ── */
+    header {
+      margin-bottom: 2rem;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.875rem;
+      margin-top: 0.25rem;
+    }
+
+    /* ── Generic card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+    }
+
+    section {
+      margin-bottom: 1.5rem;
+    }
+
+    .section-title {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+
+    /* ── Stats ── */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      gap: 0.75rem;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.875rem 1rem;
+    }
+
+    .stat-label {
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .stat-value {
+      font-size: 1.6rem;
+      font-weight: 700;
+      line-height: 1.15;
+      margin-top: 0.2rem;
+    }
+
+    .stat-unit {
+      font-size: 0.8rem;
+      font-weight: 400;
+      color: var(--muted);
+    }
+
+    /* ── Donut card ── */
+    .donut-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 2.5rem;
+      flex-wrap: wrap;
+    }
+
+    .donut-svg-wrap {
+      flex-shrink: 0;
+      width: 260px;
+    }
+
+    .donut-legend {
+      flex: 1;
+      min-width: 180px;
+    }
+
+    .legend-section-title {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 0.4rem;
+    }
+
+    .legend-section-title+.legend-section-title,
+    .legend-rows+.legend-section-title {
+      margin-top: 1rem;
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.18rem 0;
+    }
+
+    .legend-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .legend-label {
+      flex: 1;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    .legend-value {
+      font-size: 0.82rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ── Storage ── */
+    .storage-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
+
+    @media (max-width: 480px) {
+      .storage-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .storage-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+    }
+
+    .storage-label {
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .storage-pct {
+      font-size: 1.4rem;
+      font-weight: 700;
+      margin: 0.35rem 0;
+    }
+
+    .progress-track {
+      background: var(--track);
+      border-radius: 999px;
+      height: 8px;
+      overflow: hidden;
+      margin-bottom: 0.4rem;
+    }
+
+    .progress-fill {
+      height: 100%;
+      border-radius: 999px;
+    }
+
+    .storage-detail {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    /* ── Chart ── */
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+    }
+
+    .chart-canvas-wrap {
+      height: 280px;
+      position: relative;
+    }
+
+    /* ── Controls ── */
+    .controls-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem 1.5rem;
+    }
+
+    .controls-timestamp {
+      font-size: 1.25rem;
+      font-weight: 700;
+      letter-spacing: -0.01em;
+      margin-bottom: 0.75rem;
+    }
+
+    .controls-row {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+      margin-bottom: 0.75rem;
+      flex-wrap: wrap;
+    }
+
+    .ctrl-btn {
+      background: var(--bg);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.35rem 0.75rem;
+      font-size: 0.85rem;
+      font-family: var(--font);
+      color: var(--text);
+      cursor: pointer;
+      line-height: 1.4;
+    }
+
+    .ctrl-btn:hover {
+      background: var(--border);
+    }
+
+    .ctrl-btn.active {
+      background: var(--text);
+      color: var(--surface);
+      border-color: var(--text);
+    }
+
+    .speed-group {
+      display: flex;
+      gap: 0.35rem;
+      margin-left: auto;
+    }
+
+    .slider-wrap {
+      display: flex;
+      align-items: center;
+      gap: 0.75rem;
+    }
+
+    .slider-wrap input[type=range] {
+      flex: 1;
+      accent-color: var(--text);
+      height: 4px;
+      cursor: pointer;
+    }
+
+    .slider-dates {
+      display: flex;
+      justify-content: space-between;
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 0.3rem;
+    }
+
+    .date-range-row {
+      display: flex;
+      align-items: center;
+      flex-wrap: wrap;
+      gap: 0.5rem 1rem;
+      padding-top: 0.65rem;
+      margin-top: 0.65rem;
+      border-top: 1px solid var(--border);
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    .date-range-row label {
+      display: flex;
+      align-items: center;
+      gap: 0.4rem;
+    }
+
+    .date-range-row input[type="date"] {
+      border: 1px solid var(--border);
+      border-radius: 6px;
+      padding: 0.2rem 0.45rem;
+      font-size: 0.8rem;
+      color: var(--text);
+      background: var(--bg);
+      font-family: var(--font);
+      cursor: pointer;
+    }
+
+    .date-range-row input[type="date"]:focus {
+      outline: none;
+      border-color: var(--text);
+    }
+
+    /* ── Tooltip ── */
+    #donut-tooltip {
+      position: fixed;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.4rem 0.7rem;
+      font-size: 0.82rem;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.12s;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+      z-index: 100;
+      white-space: nowrap;
+    }
+
+    #donut-tooltip.visible {
+      opacity: 1;
+    }
+
+    /* ── Info tooltip ── */
+    .info-trigger { position: relative; }
+
+    .info-popup {
+      display: none;
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      width: 220px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.6rem 0.75rem;
+      font-size: 0.78rem;
+      font-weight: 400;
+      color: var(--text);
+      line-height: 1.5;
+      box-shadow: 0 4px 16px rgba(0,0,0,0.1);
+      text-transform: none;
+      letter-spacing: 0;
+      z-index: 50;
+      pointer-events: none;
+    }
+
+    .info-trigger:hover .info-popup { display: block; }
+
+    /* ── Footer ── */
+    footer {
+      margin-top: 2rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.75rem;
+      line-height: 1.6;
+    }
+
+    footer a {
+      color: var(--muted);
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+
+    <header style="display:flex; justify-content:space-between; align-items:flex-start;">
+      <div>
+        <h1>CP2030 Grid Replay</h1>
+        <p class="subtitle">Scrub through historical model output — <a href="cp2030gridmix.html"
+            style="color:var(--muted)">back to live view</a> · <a
+            href="dispatch-explainer.html" style="color:var(--muted)">how the model works</a></p>
+      </div>
+      <a href="https://github.com/matthew-rt/CP2030-gridstatus" target="_blank" rel="noopener"
+        style="color:var(--muted); margin-top:0.25rem; flex-shrink:0;">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482
+                 0-.237-.009-.868-.013-1.703-2.782.604-3.369-1.342-3.369-1.342-.454-1.155-1.11-1.462-1.11-1.462
+                 -.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832
+                 .092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683
+                 -.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0 1 12 6.836a9.59 9.59 0
+                 0 1 2.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.202 2.394.1 2.647.64.699 1.028
+                 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012
+                 2.415-.012 2.743 0 .267.18.579.688.481C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z" />
+        </svg>
+      </a>
+    </header>
+
+    <section>
+      <p class="section-title">Playback</p>
+      <div class="controls-card" id="controls-card">
+        <div class="controls-timestamp" id="ctrl-timestamp">Loading…</div>
+        <div class="controls-row">
+          <button class="ctrl-btn" id="btn-first" title="Jump to start">&#x23EE;</button>
+          <button class="ctrl-btn" id="btn-prev" title="Previous period">&#x276E;</button>
+          <button class="ctrl-btn" id="btn-play" title="Play/pause">&#x25B6; Play</button>
+          <button class="ctrl-btn" id="btn-next" title="Next period">&#x276F;</button>
+          <button class="ctrl-btn" id="btn-last" title="Jump to end">&#x23ED;</button>
+          <div class="speed-group">
+            <button class="ctrl-btn speed-btn active" data-speed="1">1×</button>
+            <button class="ctrl-btn speed-btn" data-speed="5">5×</button>
+            <button class="ctrl-btn speed-btn" data-speed="20">20×</button>
+          </div>
+        </div>
+        <div class="slider-wrap">
+          <input type="range" id="timeline-slider" min="0" max="0" value="0">
+        </div>
+        <div class="slider-dates">
+          <span id="slider-start">—</span>
+          <span id="slider-end">—</span>
+        </div>
+        <div class="date-range-row">
+          <label for="date-start">From <input type="date" id="date-start"></label>
+          <label for="date-end">To <input type="date" id="date-end"></label>
+          <button class="ctrl-btn" id="btn-reset-dates" style="font-size:0.75rem;padding:0.2rem 0.6rem;">Reset</button>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <p class="section-title">Snapshot</p>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Demand</div>
+          <div class="stat-value" id="stat-demand">—<span class="stat-unit"> GW</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Wholesale price</div>
+          <div class="stat-value" id="stat-price" style="color:#d97706">—<span class="stat-unit"> £/MWh</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Offshore wind</div>
+          <div class="stat-value" id="stat-offshore" style="color:#0284c7">—<span class="stat-unit"> GW</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Onshore wind</div>
+          <div class="stat-value" id="stat-onshore" style="color:#38bdf8">—<span class="stat-unit"> GW</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Solar</div>
+          <div class="stat-value" id="stat-solar" style="color:#d97706">—<span class="stat-unit"> GW</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Nuclear</div>
+          <div class="stat-value" id="stat-nuclear" style="color:#7c3aed">—<span class="stat-unit"> GW</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Marginal generator</div>
+          <div class="stat-value" id="stat-marginal" style="font-size:1.1rem">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Gas-free streak</div>
+          <div class="stat-value" id="stat-gasfree">—<span class="stat-unit"> hrs</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Gas needed</div>
+          <div class="stat-value" id="stat-gas">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label" style="display:flex; align-items:center; gap:0.3rem;">
+            Curtailed
+            <span class="info-trigger" style="display:inline-flex; align-items:center; justify-content:center;
+                       width:14px; height:14px; border-radius:50%; border:1px solid var(--muted);
+                       color:var(--muted); font-size:0.65rem; cursor:help; flex-shrink:0; line-height:1;
+                       position:relative;">?
+              <span class="info-popup">
+                This represents economic curtailment, where potential generation exceeds demand.
+                This is distinct from grid curtailment, which is not modelled.
+              </span>
+            </span>
+          </div>
+          <div class="stat-value" id="stat-curtailment">—</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <p class="section-title">Interconnector flows</p>
+      <div id="ic-flows-table" style="font-size:0.85rem; line-height:1.8;">—</div>
+    </section>
+
+    <section>
+      <p class="section-title">Generation mix</p>
+      <div class="donut-card">
+        <div class="donut-svg-wrap">
+          <svg id="donut-svg" viewBox="0 0 260 260" width="100%"></svg>
+        </div>
+        <div class="donut-legend" id="donut-legend"></div>
+      </div>
+    </section>
+
+    <section>
+      <p class="section-title">Storage state of charge</p>
+      <div class="storage-grid">
+        <div class="storage-card">
+          <div class="storage-label">Battery storage</div>
+          <div class="storage-pct" id="batt-pct">—%</div>
+          <div class="progress-track">
+            <div class="progress-fill" id="batt-bar" style="background:#475569; width:0%"></div>
+          </div>
+          <div class="storage-detail" id="batt-detail">— / 50 GWh</div>
+        </div>
+        <div class="storage-card">
+          <div class="storage-label">Long duration storage</div>
+          <div class="storage-pct" id="ldes-pct">—%</div>
+          <div class="progress-track">
+            <div class="progress-fill" id="ldes-bar" style="background:#94a3b8; width:0%"></div>
+          </div>
+          <div class="storage-detail" id="ldes-detail">— / 40 GWh</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <p class="section-title">Full history</p>
+      <div class="chart-card">
+        <div class="chart-canvas-wrap">
+          <canvas id="historyChart"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      Replay of historical model output. Values are derived from live Elexon BMRS and NESO data scaled to CP2030
+      capacity targets. Storage state of charge is cumulative from model initialisation.
+      Inspired by <a href="https://grid.iamkate.com">grid.iamkate.com</a>.
+      <br>Contains BMRS data © Elexon Limited copyright and database right 2026.
+    </footer>
+
+  </div>
+
+  <div id="donut-tooltip"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script
+    src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+
+  <script>
+    /* ── Config ─────────────────────────────────────────────────────────────── */
+    const CONFIG = {
+      historyUrl: 'https://data.matthewryantucker.com/history.json',
+      batteryCapacityMwh: 50_000,
+      ldesCapacityMwh: 40_000,
+      playIntervalMs: 500,   // ms between frames at 1×
+    };
+
+    /* ── Fuel definitions ───────────────────────────────────────────────────── */
+    // Dispatched generation (solid bands in chart / inner donut ring)
+    const DISPATCH_FUELS = [
+      { key: 'offshore_dispatched_mw', label: 'Offshore wind', colour: '#0284c7' },
+      { key: 'onshore_dispatched_mw',  label: 'Onshore wind',  colour: '#38bdf8' },
+      { key: 'solar_dispatched_mw',    label: 'Solar',         colour: '#d97706' },
+      { key: 'nuclear_dispatched_mw',  label: 'Nuclear',       colour: '#7c3aed' },
+      { key: 'hydro_dispatched_mw',    label: 'Hydro',         colour: '#059669' },
+      { key: 'biomass_mw',             label: 'Biomass',       colour: '#16a34a' },
+      { key: 'battery_discharge_mw',   label: 'Battery',       colour: '#475569' },
+      { key: 'ldes_discharge_mw',      label: 'LDES',          colour: '#94a3b8' },
+      { key: 'gas_mw',                 label: 'Gas',           colour: '#dc2626' },
+    ];
+
+    // Curtailed (semi-transparent bands stacked on dispatched in chart)
+    const CURTAIL_FUELS = [
+      { key: 'offshore_curtailed_mw', label: 'Offshore curtailed', colour: '#0284c7' },
+      { key: 'onshore_curtailed_mw',  label: 'Onshore curtailed',  colour: '#38bdf8' },
+      { key: 'solar_curtailed_mw',    label: 'Solar curtailed',    colour: '#d97706' },
+      { key: 'nuclear_curtailed_mw',  label: 'Nuclear curtailed',  colour: '#7c3aed' },
+      { key: 'hydro_curtailed_mw',    label: 'Hydro curtailed',    colour: '#059669' },
+    ];
+
+    function totalCurtailed(c) {
+      return CURTAIL_FUELS.reduce((s, f) => s + (c[f.key] || 0), 0);
+    }
+
+    /* ── State ──────────────────────────────────────────────────────────────── */
+    let allData = [];
+    let filteredData = [];
+    let filteredAbsIndices = [];   // index of each filteredData entry in allData
+    let curIdx = 0;
+    let playTimer = null;
+    let speed = 1;
+
+    /* ── Helpers ────────────────────────────────────────────────────────────── */
+    function mwToGw(mw) { return (mw / 1000).toFixed(1); }
+
+    function fmtDate(iso) {
+      try {
+        return new Date(iso).toLocaleString('en-GB', {
+          timeZone: 'Europe/London',
+          weekday: 'short', day: '2-digit', month: 'short', year: 'numeric',
+          hour: '2-digit', minute: '2-digit',
+        }).replace(',', '');
+      } catch { return iso; }
+    }
+
+    function fmtShort(iso) {
+      try {
+        return new Date(iso).toLocaleString('en-GB', {
+          timeZone: 'Europe/London',
+          day: '2-digit', month: 'short', year: 'numeric',
+        });
+      } catch { return iso; }
+    }
+
+    /* ── Tooltip ────────────────────────────────────────────────────────────── */
+    const tooltipEl = document.getElementById('donut-tooltip');
+
+    function showTip(evt, text) {
+      tooltipEl.textContent = text;
+      tooltipEl.classList.add('visible');
+      moveTip(evt);
+    }
+    function moveTip(evt) {
+      tooltipEl.style.left = (evt.clientX + 14) + 'px';
+      tooltipEl.style.top = (evt.clientY - 32) + 'px';
+    }
+    function hideTip() { tooltipEl.classList.remove('visible'); }
+
+    /* ── D3 donut ───────────────────────────────────────────────────────────── */
+    const CX = 130, CY = 130;
+    const INNER_R = 72, OUTER_R = 110;
+    const OUTER_R2 = 120, OUTER_R3 = 130;
+
+    function renderDonut(c) {
+      const svg = d3.select('#donut-svg');
+      svg.selectAll('*').remove();
+
+      const g = svg.append('g').attr('transform', `translate(${CX},${CY})`);
+      const demandMw = c.demand_mw || 1;
+
+      const importMw = Math.max(0, c.interconnector_mw || 0);
+      const genData = DISPATCH_FUELS
+        .map(f => ({ ...f, mw: c[f.key] || 0 }))
+        .filter(f => f.mw > 0);
+      if (importMw > 0) genData.push({ label: 'Imports', mw: importMw, colour: '#f97316' });
+
+      const totalGen = d3.sum(genData, d => d.mw);
+      const pie = d3.pie().value(d => d.mw).sort(null).padAngle(0.025);
+      const innerArc = d3.arc().innerRadius(INNER_R).outerRadius(OUTER_R).cornerRadius(3);
+
+      g.selectAll('.gen-slice')
+        .data(pie(genData))
+        .join('path')
+        .attr('class', 'gen-slice')
+        .attr('d', innerArc)
+        .attr('fill', d => d.data.colour)
+        .style('cursor', 'pointer')
+        .on('mousemove', (evt, d) => {
+          const pct = ((d.data.mw / totalGen) * 100).toFixed(1);
+          showTip(evt, `${d.data.label}: ${mwToGw(d.data.mw)} GW (${pct}% of generation)`);
+        })
+        .on('mouseleave', hideTip);
+
+      g.append('text')
+        .attr('text-anchor', 'middle').attr('dy', '-0.2em')
+        .attr('font-size', '1.35rem').attr('font-weight', '700').attr('fill', '#0f172a')
+        .text(mwToGw(demandMw));
+      g.append('text')
+        .attr('text-anchor', 'middle').attr('dy', '1.15em')
+        .attr('font-size', '0.65rem').attr('fill', '#64748b')
+        .text('GW demand');
+
+      // Outer ring: storage charging, exports, curtailed (per tech)
+      g.append('path')
+        .attr('d', d3.arc()({
+          innerRadius: OUTER_R2, outerRadius: OUTER_R3,
+          startAngle: 0, endAngle: 2 * Math.PI,
+        }))
+        .attr('fill', '#e2e8f0');
+
+      const exportMw = Math.max(0, -(c.interconnector_mw || 0));
+      const storageMw = (c.battery_charge_mw || 0) + (c.ldes_charge_mw || 0);
+      const curtailSegs = CURTAIL_FUELS
+        .map(f => ({ label: f.label, mw: c[f.key] || 0, colour: f.colour }))
+        .filter(s => s.mw > 0);
+      const outerSegs = [
+        { label: 'Into storage', mw: storageMw, colour: '#0ea5e9' },
+        { label: 'Export', mw: exportMw, colour: '#6366f1' },
+        ...curtailSegs,
+      ];
+
+      const outerArc = d3.arc().innerRadius(OUTER_R2).outerRadius(OUTER_R3).cornerRadius(2);
+      let angle = 0;
+      outerSegs.forEach(seg => {
+        if (seg.mw <= 0) return;
+        const sweep = (seg.mw / demandMw) * 2 * Math.PI;
+        g.append('path')
+          .attr('d', outerArc({ startAngle: angle, endAngle: angle + sweep }))
+          .attr('fill', seg.colour)
+          .attr('opacity', curtailSegs.includes(seg) ? 0.45 : 1)
+          .style('cursor', 'pointer')
+          .on('mousemove', evt => {
+            const pct = ((seg.mw / demandMw) * 100).toFixed(1);
+            showTip(evt, `${seg.label}: ${mwToGw(seg.mw)} GW (${pct}% of demand)`);
+          })
+          .on('mouseleave', hideTip);
+        angle += sweep;
+      });
+
+      const curtailLegend = curtailSegs.length > 0
+        ? `<div class="legend-section-title">Curtailed</div>` +
+          `<div class="legend-rows">` +
+          curtailSegs.map(s =>
+            `<div class="legend-row">
+              <span class="legend-dot" style="background:${s.colour}; opacity:0.45; border-radius:2px"></span>
+              <span class="legend-label">${s.label}</span>
+              <span class="legend-value">${mwToGw(s.mw)} GW</span>
+            </div>`
+          ).join('') + `</div>`
+        : '';
+
+      const storageLegend = (storageMw > 0 || exportMw > 0)
+        ? `<div class="legend-section-title">Surplus</div>` +
+          `<div class="legend-rows">` +
+          [{ label: 'Into storage', mw: storageMw, colour: '#0ea5e9' }, { label: 'Export', mw: exportMw, colour: '#6366f1' }]
+            .filter(s => s.mw > 0)
+            .map(s => `<div class="legend-row">
+              <span class="legend-dot" style="background:${s.colour}; border-radius:2px"></span>
+              <span class="legend-label">${s.label}</span>
+              <span class="legend-value">${mwToGw(s.mw)} GW</span>
+            </div>`).join('') + `</div>`
+        : '';
+
+      document.getElementById('donut-legend').innerHTML =
+        `<div class="legend-section-title">Generation</div>` +
+        `<div class="legend-rows">` +
+        genData.map(d => {
+          const pct = ((d.mw / totalGen) * 100).toFixed(0);
+          return `<div class="legend-row">
+            <span class="legend-dot" style="background:${d.colour}"></span>
+            <span class="legend-label">${d.label}</span>
+            <span class="legend-value">${mwToGw(d.mw)} GW</span>
+          </div>`;
+        }).join('') +
+        `</div>` +
+        storageLegend +
+        curtailLegend;
+    }
+
+    /* ── Stats ──────────────────────────────────────────────────────────────── */
+    const MARGINAL_LABELS = {
+      offshore_wind_ro:  { label: 'Offshore wind', colour: '#0284c7' },
+      offshore_wind_cfd: { label: 'Offshore wind', colour: '#0284c7' },
+      onshore_wind_ro:   { label: 'Onshore wind',  colour: '#38bdf8' },
+      onshore_wind_cfd:  { label: 'Onshore wind',  colour: '#38bdf8' },
+      solar_legacy:      { label: 'Solar',          colour: '#d97706' },
+      solar_cfd:         { label: 'Solar',          colour: '#d97706' },
+      nuclear:           { label: 'Nuclear',        colour: '#7c3aed' },
+      hydro:             { label: 'Hydro',          colour: '#059669' },
+      battery_discharge: { label: 'Battery',        colour: '#475569' },
+      ldes_discharge:    { label: 'LDES',           colour: '#94a3b8' },
+      biomass:           { label: 'Biomass',        colour: '#16a34a' },
+      gas_ccgt:          { label: 'Gas (CCGT)',      colour: '#dc2626' },
+      gas_ocgt:          { label: 'Gas (OCGT)',      colour: '#ef4444' },
+      unserved:          { label: 'Unserved demand', colour: '#f97316' },
+    };
+
+    const IC_ZONE_NAMES = {
+      FR: 'France', BE: 'Belgium', NL: 'Netherlands',
+      NO2: 'Norway', DK1: 'Denmark', DE: 'Germany', IE: 'Ireland',
+    };
+
+    function computeGasFreeStreak(absIdx) {
+      // Count consecutive gas-free half-hour periods back through allData
+      let count = 0;
+      for (let i = absIdx; i >= 0; i--) {
+        if ((allData[i].gas_mw || 0) > 0) break;
+        count++;
+      }
+      return (count * 0.5).toFixed(1);
+    }
+
+    function toDateInput(isoStr) { return isoStr.slice(0, 10); }
+
+    function renderStats(c) {
+      document.getElementById('stat-demand').innerHTML =
+        `${mwToGw(c.demand_mw)}<span class="stat-unit"> GW</span>`;
+      document.getElementById('stat-offshore').innerHTML =
+        `${mwToGw(c.offshore_dispatched_mw)}<span class="stat-unit"> GW</span>`;
+      document.getElementById('stat-onshore').innerHTML =
+        `${mwToGw(c.onshore_dispatched_mw)}<span class="stat-unit"> GW</span>`;
+      document.getElementById('stat-solar').innerHTML =
+        `${mwToGw(c.solar_dispatched_mw)}<span class="stat-unit"> GW</span>`;
+      document.getElementById('stat-nuclear').innerHTML =
+        `${mwToGw(c.nuclear_dispatched_mw)}<span class="stat-unit"> GW</span>`;
+
+      const priceEl = document.getElementById('stat-price');
+      const price = c.wholesale_price_gbp;
+      priceEl.innerHTML = price != null
+        ? `${price.toFixed(1)}<span class="stat-unit"> £/MWh</span>`
+        : `—<span class="stat-unit"> £/MWh</span>`;
+
+      const streak = computeGasFreeStreak(filteredAbsIndices[curIdx] ?? curIdx);
+      document.getElementById('stat-gasfree').innerHTML =
+        `${streak}<span class="stat-unit"> hrs</span>`;
+
+      const gasEl = document.getElementById('stat-gas');
+      const gasMw = c.gas_mw || 0;
+      gasEl.style.color = gasMw > 0 ? '#dc2626' : '#16a34a';
+      gasEl.innerHTML = gasMw > 0
+        ? `${mwToGw(gasMw)}<span class="stat-unit"> GW</span>`
+        : `None`;
+
+      const curtMw = totalCurtailed(c);
+      const curtEl = document.getElementById('stat-curtailment');
+      curtEl.style.color = curtMw > 0 ? '#0284c7' : '#64748b';
+      curtEl.innerHTML = `${mwToGw(curtMw)}<span class="stat-unit"> GW</span>`;
+
+      const mTech = c.marginal_tech || '';
+      const icMatch = mTech.match(/^ic_(.+)/);
+      let mLabel, mColour;
+      if (icMatch) {
+        mLabel  = `Import (${icMatch[1]})`;
+        mColour = '#64748b';
+      } else {
+        const mInfo = MARGINAL_LABELS[mTech];
+        mLabel  = mInfo ? mInfo.label  : (mTech || '—');
+        mColour = mInfo ? mInfo.colour : '#64748b';
+      }
+      const margEl = document.getElementById('stat-marginal');
+      margEl.style.color = mColour;
+      margEl.textContent = mLabel || '—';
+
+      const icEl = document.getElementById('ic-flows-table');
+      let icFlows = {};
+      try { icFlows = JSON.parse(c.ic_flows_json || '{}'); } catch (e) {}
+      const icEntries = Object.entries(icFlows).filter(([, mw]) => mw !== 0);
+      if (icEntries.length === 0) {
+        icEl.innerHTML = '<span style="color:#64748b">No active interconnector flows</span>';
+      } else {
+        icEntries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+        icEl.innerHTML = icEntries.map(([zone, mw]) => {
+          const name   = IC_ZONE_NAMES[zone] || zone;
+          const isImp  = mw > 0;
+          const colour = isImp ? '#0284c7' : '#f59e0b';
+          const arrow  = isImp ? '▲ Import' : '▼ Export';
+          return `<div style="display:flex;justify-content:space-between;max-width:280px;">` +
+            `<span>${name}</span>` +
+            `<span style="color:${colour}">${arrow} ${(Math.abs(mw)/1000).toFixed(2)} GW</span>` +
+            `</div>`;
+        }).join('');
+      }
+    }
+
+    /* ── Storage ────────────────────────────────────────────────────────────── */
+    function renderStorage(c) {
+      const battPct = Math.min(100, (c.battery_soc_mwh / CONFIG.batteryCapacityMwh) * 100);
+      const ldesPct = Math.min(100, (c.ldes_soc_mwh / CONFIG.ldesCapacityMwh) * 100);
+
+      document.getElementById('batt-pct').textContent = battPct.toFixed(0) + '%';
+      document.getElementById('batt-bar').style.width = battPct + '%';
+      document.getElementById('batt-detail').textContent =
+        `${(c.battery_soc_mwh / 1000).toFixed(1)} / ${CONFIG.batteryCapacityMwh / 1000} GWh`;
+
+      document.getElementById('ldes-pct').textContent = ldesPct.toFixed(0) + '%';
+      document.getElementById('ldes-bar').style.width = ldesPct + '%';
+      document.getElementById('ldes-detail').textContent =
+        `${(c.ldes_soc_mwh / 1000).toFixed(1)} / ${CONFIG.ldesCapacityMwh / 1000} GWh`;
+    }
+
+    /* ── History chart with vertical-line marker ────────────────────────────── */
+    let historyChart = null;
+
+    // Custom Chart.js plugin: draws a vertical line at the current index
+    const verticalLinePlugin = {
+      id: 'verticalLine',
+      afterDraw(chart) {
+        const idx = chart.options.plugins.verticalLine?.index;
+        if (idx === undefined || idx === null) return;
+        const { ctx, chartArea, scales } = chart;
+        const x = scales.x.getPixelForValue(chart.data.labels[idx]);
+        if (x < chartArea.left || x > chartArea.right) return;
+        ctx.save();
+        ctx.beginPath();
+        ctx.moveTo(x, chartArea.top);
+        ctx.lineTo(x, chartArea.bottom);
+        ctx.strokeStyle = '#0f172a';
+        ctx.lineWidth = 1.5;
+        ctx.setLineDash([4, 3]);
+        ctx.stroke();
+        ctx.restore();
+      },
+    };
+    Chart.register(verticalLinePlugin);
+
+    function buildChart(data) {
+      const labels = data.map(d => new Date(d.timestamp));
+
+      // Dispatched generation — solid bands
+      const datasets = DISPATCH_FUELS.map(f => ({
+        label: f.label,
+        data: data.map(d => (d[f.key] || 0) / 1000),
+        backgroundColor: f.colour + 'cc',
+        borderColor: f.colour,
+        borderWidth: 1,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.3,
+        stack: 'gen',
+      }));
+
+      // Curtailed — semi-transparent bands stacked on top of dispatched
+      CURTAIL_FUELS.forEach(f => {
+        datasets.push({
+          label: f.label,
+          data: data.map(d => (d[f.key] || 0) / 1000),
+          backgroundColor: f.colour + '44',
+          borderColor: f.colour + '88',
+          borderWidth: 1,
+          borderDash: [3, 3],
+          pointRadius: 0,
+          fill: true,
+          tension: 0.3,
+          stack: 'gen',
+        });
+      });
+
+      datasets.push({
+        label: 'Demand',
+        data: data.map(d => (d.demand_mw || 0) / 1000),
+        borderColor: '#0f172a',
+        borderWidth: 2,
+        borderDash: [5, 4],
+        pointRadius: 0,
+        fill: false,
+        tension: 0.3,
+        order: -1,
+        stack: 'demand',
+      });
+
+      const ctx = document.getElementById('historyChart').getContext('2d');
+
+      historyChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          animation: false,
+          interaction: { mode: 'index', intersect: false },
+          scales: {
+            x: {
+              type: 'time',
+              time: { unit: 'day', displayFormats: { day: 'd MMM' } },
+              adapters: { date: { timeZone: 'Europe/London' } },
+              ticks: { color: '#64748b', maxTicksLimit: 14, maxRotation: 0 },
+              grid: { color: '#e2e8f0' },
+            },
+            y: {
+              stacked: true,
+              min: 0,
+              ticks: { color: '#64748b', callback: v => v + ' GW' },
+              grid: { color: '#e2e8f0' },
+            },
+          },
+          plugins: {
+            verticalLine: { index: curIdx },
+            legend: {
+              position: 'bottom',
+              labels: { color: '#64748b', boxWidth: 12, padding: 14, font: { size: 11 } },
+            },
+            tooltip: {
+              backgroundColor: '#ffffff',
+              titleColor: '#0f172a',
+              bodyColor: '#64748b',
+              borderColor: '#e2e8f0',
+              borderWidth: 1,
+              callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)} GW` },
+            },
+            decimation: { enabled: true, algorithm: 'lttb', samples: 400 },
+          },
+        },
+      });
+    }
+
+    function updateChartMarker(idx) {
+      if (!historyChart) return;
+      historyChart.options.plugins.verticalLine.index = idx;
+      historyChart.update('none');
+    }
+
+    /* ── Render one frame ───────────────────────────────────────────────────── */
+    function renderFrame(idx) {
+      const c = filteredData[idx];
+      document.getElementById('ctrl-timestamp').textContent = fmtDate(c.timestamp);
+      document.getElementById('timeline-slider').value = idx;
+      renderStats(c);
+      renderDonut(c);
+      renderStorage(c);
+      updateChartMarker(idx);
+    }
+
+    /* ── Playback controls ──────────────────────────────────────────────────── */
+    function stepTo(idx) {
+      curIdx = Math.max(0, Math.min(filteredData.length - 1, idx));
+      renderFrame(curIdx);
+    }
+
+    function startPlay() {
+      if (playTimer) return;
+      document.getElementById('btn-play').textContent = '⏸ Pause';
+      document.getElementById('btn-play').classList.add('active');
+      playTimer = setInterval(() => {
+        if (curIdx >= filteredData.length - 1) {
+          stopPlay();
+          return;
+        }
+        stepTo(curIdx + speed);
+      }, CONFIG.playIntervalMs);
+    }
+
+    function stopPlay() {
+      clearInterval(playTimer);
+      playTimer = null;
+      document.getElementById('btn-play').textContent = '▶ Play';
+      document.getElementById('btn-play').classList.remove('active');
+    }
+
+    /* ── Date filtering ─────────────────────────────────────────────────────── */
+    function applyFilter() {
+      const startVal = document.getElementById('date-start').value;
+      const endVal   = document.getElementById('date-end').value;
+      const start = startVal ? new Date(startVal) : null;
+      const end   = endVal   ? new Date(endVal + 'T23:59:59') : null;
+
+      filteredAbsIndices = [];
+      filteredData = allData.filter((d, i) => {
+        const t = new Date(d.timestamp);
+        if (start && t < start) return false;
+        if (end   && t > end)   return false;
+        filteredAbsIndices.push(i);
+        return true;
+      });
+
+      if (!filteredData.length) return;
+
+      const slider = document.getElementById('timeline-slider');
+      slider.max = filteredData.length - 1;
+      curIdx = Math.min(curIdx, filteredData.length - 1);
+      slider.value = curIdx;
+
+      document.getElementById('slider-start').textContent = fmtShort(filteredData[0].timestamp);
+      document.getElementById('slider-end').textContent   = fmtShort(filteredData[filteredData.length - 1].timestamp);
+
+      if (historyChart) {
+        historyChart.destroy();
+        historyChart = null;
+      }
+      buildChart(filteredData);
+      renderFrame(curIdx);
+    }
+
+    /* ── Controls wiring ────────────────────────────────────────────────────── */
+    function wireControls() {
+      document.getElementById('btn-first').addEventListener('click', () => { stopPlay(); stepTo(0); });
+      document.getElementById('btn-prev').addEventListener('click', () => { stopPlay(); stepTo(curIdx - 1); });
+      document.getElementById('btn-next').addEventListener('click', () => { stopPlay(); stepTo(curIdx + 1); });
+      document.getElementById('btn-last').addEventListener('click', () => { stopPlay(); stepTo(filteredData.length - 1); });
+      document.getElementById('btn-play').addEventListener('click', () => {
+        playTimer ? stopPlay() : startPlay();
+      });
+
+      document.getElementById('timeline-slider').addEventListener('input', e => {
+        stopPlay();
+        stepTo(parseInt(e.target.value, 10));
+      });
+
+      document.querySelectorAll('.speed-btn').forEach(btn => {
+        btn.addEventListener('click', () => {
+          document.querySelectorAll('.speed-btn').forEach(b => b.classList.remove('active'));
+          btn.classList.add('active');
+          speed = parseInt(btn.dataset.speed, 10);
+        });
+      });
+
+      document.getElementById('date-start').addEventListener('change', () => { stopPlay(); applyFilter(); });
+      document.getElementById('date-end').addEventListener('change',   () => { stopPlay(); applyFilter(); });
+      document.getElementById('btn-reset-dates').addEventListener('click', () => {
+        stopPlay();
+        document.getElementById('date-start').value = toDateInput(allData[0].timestamp);
+        document.getElementById('date-end').value   = toDateInput(allData[allData.length - 1].timestamp);
+        applyFilter();
+      });
+    }
+
+    /* ── Load and initialise ────────────────────────────────────────────────── */
+    async function init() {
+      let data;
+      try {
+        const res = await fetch(CONFIG.historyUrl + '?t=' + Date.now());
+        if (!res.ok) throw new Error('HTTP ' + res.status);
+        data = await res.json();
+      } catch (err) {
+        document.getElementById('ctrl-timestamp').textContent = 'Could not load history.json';
+        console.error(err);
+        return;
+      }
+
+      if (!data.length) {
+        document.getElementById('ctrl-timestamp').textContent = 'No data yet';
+        return;
+      }
+
+      allData = data;
+      filteredData = allData;
+      filteredAbsIndices = allData.map((_, i) => i);
+      curIdx = allData.length - 1;
+
+      // Set date pickers to the full data range
+      document.getElementById('date-start').value = toDateInput(allData[0].timestamp);
+      document.getElementById('date-end').value   = toDateInput(allData[allData.length - 1].timestamp);
+
+      const slider = document.getElementById('timeline-slider');
+      slider.max   = allData.length - 1;
+      slider.value = curIdx;
+
+      document.getElementById('slider-start').textContent = fmtShort(allData[0].timestamp);
+      document.getElementById('slider-end').textContent   = fmtShort(allData[allData.length - 1].timestamp);
+
+      wireControls();
+      buildChart(filteredData);
+      renderFrame(curIdx);
+    }
+
+    init();
+  </script>
+</body>
+
+</html>

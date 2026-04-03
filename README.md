@@ -20,7 +20,7 @@ Offshore and onshore wind are scaled separately, as offshore capacity is expecte
 
 The onshore load factor is derived from the embedded (distribution-level) wind generation and capacity reported by NESO, assuming all embedded wind is onshore. This load factor is applied to both embedded and transmission-connected onshore wind, on the assumption that they share a similar spatial distribution.
 
-The offshore load factor is estimated by subtracting the estimated transmission onshore output (onshore load factor × current transmission onshore capacity) from the total transmission-connected wind reported by Elexon, then dividing by current offshore capacity.
+The offshore load factor is estimated by subtracting the estimated transmission onshore output (onshore load factor × current transmission onshore capacity) from the total transmission-connected wind reported by Elexon, then dividing by current offshore capacity. The future offshore wind load factor is set so it is 15% higher than the existing, to account for improvements in turbine performance with size. 
 
 Both load factors are then applied to their respective CP2030 target capacities. This approach will likely underestimate actual future load factors, as newer turbines tend to have higher yields.
 
@@ -36,21 +36,27 @@ We assume that the hydroelectric capacity in 2030 is the same as the 2026 capaci
 
 Nuclear load factor is extrapolated to the projected capacity. We assume that Heysham 2, Torness and Sizewell B remain online. Hinkley Point C and Sizewell C are not assumed to be online. 
 
-### Dispatchable sources of power
-
-We assume that Biomass and unabated gas are dispatched to meet demand, with Biomass dispatched first.
 
 ## Demand
 
 We make a simple assumption that overall demand is 4 GW higher in each hour, based on FES. This will not properly capture heating demand in the winter (and varying patterns of demand).
 
-## Storage
-
-We keep a running estimate of the total energy stored in batteries and longer duration storage. Batteries are charged off surplus renewables and nuclear. We do not charge batteries off interconnectors or dispatchable power (this is potentially unrealistic). Storage is discharged to meet demand, before biomass and unabated gas. Batteries are assumed to be 2 hour batteries, and LDES is assumed to be 12 hours. We assume a charge and discharge efficiency of 95% each way for batteries, and 70% each way for LDES (for a rough estimate of a mix of pumped hydro and other sources).
-
 ## Interconnectors
 
-This section makes several assumptions. If there is a surplus of electricity, we export to any country which we are exporting to in this hour, but not to any country we are exporting from. If there is a deficit of electricity, we import from any country which we are importing from in this hour and don't export at all. Interconnectors are capped at their physical size. We assume no new interconnectors are added by 2030 for simplicity (although some will be).
+We model the existing interconnectors, and 2 new ones: Nautilus, to Belgium, and Neuconnect, to Germany
+
+## Storage
+
+We keep a running estimate of the total energy stored in batteries and longer duration storage. BaBatteries are assumed to be 2 hour batteries, and LDES is assumed to be 12 hours. We assume a charge and discharge efficiency of 95% each way for batteries, and 70% each way for LDES (for a rough estimate of a mix of pumped hydro and other sources).
+
+
+## Power dispatch
+
+To decide what generation dispatches, we run a simulation of merit order dispatch across the technologies based on what is generating. We assume that renewables with different subsidy schemes will bid differently, with some generators able to bid below zero. The auction is pay as clear: we move through the merit order stack until demand is met. 
+
+What complicates this slightly is the addition of interconnectors and storage which can either export or import. 
+
+We see where the merit order clears, and if this is lower than the price of an interconnected country, we can export to them. If the price which the market clears at is higher than a foreign country, we import from them. A threshold for each interconnector is used to ensure that import/export only happens when the price is sufficiently different.
 
 ## How it works
 

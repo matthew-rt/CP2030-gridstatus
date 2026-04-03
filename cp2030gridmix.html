@@ -1,0 +1,960 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>CP2030 Grid Tracker</title>
+  <style>
+    :root {
+      --bg: #f1f5f9;
+      --surface: #ffffff;
+      --border: #e2e8f0;
+      --track: #e2e8f0;
+      --text: #0f172a;
+      --muted: #64748b;
+      --font: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+    }
+
+    *,
+    *::before,
+    *::after {
+      box-sizing: border-box;
+      margin: 0;
+      padding: 0;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 15px;
+      line-height: 1.5;
+      padding: 1.5rem 1rem 3rem;
+    }
+
+    .container {
+      max-width: 960px;
+      margin: 0 auto;
+    }
+
+    /* ── Header ── */
+    header {
+      margin-bottom: 2rem;
+    }
+
+    h1 {
+      font-size: 1.6rem;
+      font-weight: 700;
+      letter-spacing: -0.02em;
+    }
+
+    .subtitle {
+      color: var(--muted);
+      font-size: 0.875rem;
+      margin-top: 0.25rem;
+    }
+
+    .last-updated {
+      color: var(--muted);
+      font-size: 0.8rem;
+      margin-top: 0.35rem;
+    }
+
+    /* ── Generic card ── */
+    .card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+    }
+
+    section {
+      margin-bottom: 1.5rem;
+    }
+
+    .section-title {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 0.75rem;
+    }
+
+    /* ── Stats ── */
+    .stats-grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fill, minmax(130px, 1fr));
+      gap: 0.75rem;
+    }
+
+    .stat-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 0.875rem 1rem;
+    }
+
+    .stat-label {
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .stat-value {
+      font-size: 1.6rem;
+      font-weight: 700;
+      line-height: 1.15;
+      margin-top: 0.2rem;
+    }
+
+    .stat-unit {
+      font-size: 0.8rem;
+      font-weight: 400;
+      color: var(--muted);
+    }
+
+    /* ── Donut card ── */
+    .donut-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.5rem;
+      display: flex;
+      align-items: center;
+      gap: 2.5rem;
+      flex-wrap: wrap;
+    }
+
+    .donut-svg-wrap {
+      flex-shrink: 0;
+      width: 260px;
+    }
+
+    .donut-legend {
+      flex: 1;
+      min-width: 180px;
+    }
+
+    .legend-section-title {
+      font-size: 0.72rem;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: var(--muted);
+      margin-bottom: 0.4rem;
+    }
+
+    .legend-section-title+.legend-section-title,
+    .legend-rows+.legend-section-title {
+      margin-top: 1rem;
+    }
+
+    .legend-row {
+      display: flex;
+      align-items: center;
+      gap: 0.5rem;
+      padding: 0.18rem 0;
+    }
+
+    .legend-dot {
+      width: 9px;
+      height: 9px;
+      border-radius: 50%;
+      flex-shrink: 0;
+    }
+
+    .legend-label {
+      flex: 1;
+      font-size: 0.82rem;
+      color: var(--muted);
+    }
+
+    .legend-value {
+      font-size: 0.82rem;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+
+    /* ── Storage ── */
+    .storage-grid {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 0.75rem;
+    }
+
+    @media (max-width: 480px) {
+      .storage-grid {
+        grid-template-columns: 1fr;
+      }
+    }
+
+    .storage-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1rem 1.25rem;
+    }
+
+    .storage-label {
+      font-size: 0.72rem;
+      color: var(--muted);
+      text-transform: uppercase;
+      letter-spacing: 0.06em;
+    }
+
+    .storage-pct {
+      font-size: 1.4rem;
+      font-weight: 700;
+      margin: 0.35rem 0;
+    }
+
+    .progress-track {
+      background: var(--track);
+      border-radius: 999px;
+      height: 8px;
+      overflow: hidden;
+      margin-bottom: 0.4rem;
+    }
+
+    .progress-fill {
+      height: 100%;
+      border-radius: 999px;
+      transition: width 0.5s ease;
+    }
+
+    .storage-detail {
+      font-size: 0.8rem;
+      color: var(--muted);
+    }
+
+    /* ── History chart ── */
+    .chart-card {
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 12px;
+      padding: 1.25rem;
+    }
+
+    .chart-canvas-wrap {
+      height: 280px;
+      position: relative;
+    }
+
+    /* ── Tooltip ── */
+    #donut-tooltip {
+      position: fixed;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.4rem 0.7rem;
+      font-size: 0.82rem;
+      pointer-events: none;
+      opacity: 0;
+      transition: opacity 0.12s;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+      z-index: 100;
+      white-space: nowrap;
+    }
+
+    #donut-tooltip.visible {
+      opacity: 1;
+    }
+
+    /* ── Footer ── */
+    footer {
+      margin-top: 2rem;
+      padding-top: 1.25rem;
+      border-top: 1px solid var(--border);
+      color: var(--muted);
+      font-size: 0.75rem;
+      line-height: 1.6;
+    }
+
+    footer a {
+      color: var(--muted);
+    }
+
+    /* ── Record cards ── */
+    .record-when {
+      font-size: 0.72rem;
+      color: var(--muted);
+      margin-top: 0.25rem;
+      line-height: 1.3;
+    }
+
+    /* ── Info popover ── */
+    .info-trigger {
+      position: relative;
+    }
+
+    .info-popup {
+      display: none;
+      position: absolute;
+      bottom: calc(100% + 8px);
+      left: 50%;
+      transform: translateX(-50%);
+      width: 220px;
+      background: var(--surface);
+      border: 1px solid var(--border);
+      border-radius: 8px;
+      padding: 0.6rem 0.75rem;
+      font-size: 0.78rem;
+      font-weight: 400;
+      color: var(--text);
+      line-height: 1.5;
+      box-shadow: 0 4px 16px rgba(0, 0, 0, 0.1);
+      text-transform: none;
+      letter-spacing: 0;
+      z-index: 50;
+      pointer-events: none;
+    }
+
+    .info-trigger:hover .info-popup {
+      display: block;
+    }
+  </style>
+</head>
+
+<body>
+  <div class="container">
+
+    <header style="display:flex; justify-content:space-between; align-items:flex-start;">
+      <div>
+        <h1>CP2030 Grid Tracker</h1>
+        <p class="subtitle">What would the grid mix look like today with Clean Power 2030 capacity? Simulated with real
+          data from 01/01/2026 onwards — <a href="cp2030replay.html" style="color:var(--muted)">replay history</a> · <a
+            href="dispatch-explainer.html" style="color:var(--muted)">how the model works</a></p>
+        <p class="last-updated" id="last-updated">Loading…</p>
+      </div>
+      <a href="https://github.com/matthew-rt/CP2030-gridstatus" target="_blank" rel="noopener"
+        style="color:var(--muted); margin-top:0.25rem; flex-shrink:0;">
+        <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+          <path d="M12 2C6.477 2 2 6.477 2 12c0 4.418 2.865 8.166 6.839 9.489.5.092.682-.217.682-.482
+                 0-.237-.009-.868-.013-1.703-2.782.604-3.369-1.342-3.369-1.342-.454-1.155-1.11-1.462-1.11-1.462
+                 -.908-.62.069-.608.069-.608 1.003.07 1.531 1.03 1.531 1.03.892 1.529 2.341 1.087 2.91.832
+                 .092-.647.35-1.088.636-1.338-2.22-.253-4.555-1.11-4.555-4.943 0-1.091.39-1.984 1.029-2.683
+                 -.103-.253-.446-1.27.098-2.647 0 0 .84-.269 2.75 1.025A9.578 9.578 0 0 1 12 6.836a9.59 9.59 0
+                 0 1 2.504.337c1.909-1.294 2.747-1.025 2.747-1.025.546 1.377.202 2.394.1 2.647.64.699 1.028
+                 1.592 1.028 2.683 0 3.842-2.339 4.687-4.566 4.935.359.309.678.919.678 1.852 0 1.336-.012
+                 2.415-.012 2.743 0 .267.18.579.688.481C19.138 20.163 22 16.418 22 12c0-5.523-4.477-10-10-10z" />
+        </svg>
+      </a>
+    </header>
+
+    <section>
+      <p class="section-title">Current snapshot</p>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Demand</div>
+          <div class="stat-value" id="stat-demand">—<span class="stat-unit"> GW</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Wholesale price</div>
+          <div class="stat-value" id="stat-wholesale-price" style="color:#d97706">—<span class="stat-unit"> £/MWh</span>
+          </div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Offshore wind</div>
+          <div class="stat-value" id="stat-offshore" style="color:#0284c7">—<span class="stat-unit"> GW</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Onshore wind</div>
+          <div class="stat-value" id="stat-onshore" style="color:#38bdf8">—<span class="stat-unit"> GW</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Solar</div>
+          <div class="stat-value" id="stat-solar" style="color:#facc15">—<span class="stat-unit"> GW</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Nuclear</div>
+          <div class="stat-value" id="stat-nuclear" style="color:#7c3aed">—<span class="stat-unit"> GW</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Marginal generator</div>
+          <div class="stat-value" id="stat-marginal" style="font-size:1.1rem">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Gas-free streak</div>
+          <div class="stat-value" id="stat-gasfree">—<span class="stat-unit"> hrs</span></div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Gas needed</div>
+          <div class="stat-value" id="stat-gas">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label" style="display:flex; align-items:center; gap:0.3rem;">
+            Curtailed
+            <span class="info-trigger" style="display:inline-flex; align-items:center; justify-content:center;
+                       width:14px; height:14px; border-radius:50%; border:1px solid var(--muted);
+                       color:var(--muted); font-size:0.65rem; cursor:help; flex-shrink:0; line-height:1;
+                       position:relative;">?
+              <span class="info-popup">
+                This represents economic curtailment, where potential generation exceeds demand.
+                This is distinct from grid curtailment, which is not modelled.
+              </span>
+            </span>
+          </div>
+          <div class="stat-value" id="stat-curtailment">—</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <p class="section-title">Generation mix</p>
+      <div class="donut-card">
+        <div class="donut-svg-wrap">
+          <svg id="donut-svg" viewBox="0 0 260 260" width="100%"></svg>
+        </div>
+        <div class="donut-legend" id="donut-legend"></div>
+      </div>
+    </section>
+
+    <section>
+      <p class="section-title">Interconnector flows</p>
+      <div id="ic-flows-table" style="font-size:0.85rem; line-height:1.8;">—</div>
+    </section>
+
+    <section>
+      <p class="section-title">Storage state of charge</p>
+      <div class="storage-grid">
+        <div class="storage-card">
+          <div class="storage-label">Battery storage</div>
+          <div class="storage-pct" id="batt-pct">—%</div>
+          <div class="progress-track">
+            <div class="progress-fill" id="batt-bar" style="background:#475569; width:0%"></div>
+          </div>
+          <div class="storage-detail" id="batt-detail">— / 50 GWh</div>
+        </div>
+        <div class="storage-card">
+          <div class="storage-label">Long duration storage</div>
+          <div class="storage-pct" id="ldes-pct">—%</div>
+          <div class="progress-track">
+            <div class="progress-fill" id="ldes-bar" style="background:#94a3b8; width:0%"></div>
+          </div>
+          <div class="storage-detail" id="ldes-detail">— / 40 GWh</div>
+        </div>
+      </div>
+    </section>
+
+    <section id="records-section" style="display:none">
+      <p class="section-title">Records</p>
+      <div class="stats-grid">
+        <div class="stat-card">
+          <div class="stat-label">Longest gas-free streak</div>
+          <div class="stat-value" id="rec-streak">—<span class="stat-unit"> hrs</span></div>
+          <div class="record-when" id="rec-streak-when">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Max curtailment</div>
+          <div class="stat-value" id="rec-curtailment">—<span class="stat-unit"> GW</span></div>
+          <div class="record-when" id="rec-curtailment-when">—</div>
+        </div>
+        <div class="stat-card">
+          <div class="stat-label">Peak renewables</div>
+          <div class="stat-value" id="rec-renewables">—<span class="stat-unit"> GW</span></div>
+          <div class="record-when" id="rec-renewables-when">—</div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <p class="section-title">24-hour history</p>
+      <div class="chart-card">
+        <div class="chart-canvas-wrap">
+          <canvas id="historyChart"></canvas>
+        </div>
+      </div>
+    </section>
+
+    <footer>
+      This is a model, not a forecast. Values are derived from live Elexon BMRS and NESO data scaled to CP2030
+      capacity targets. Storage state of charge is approximate, initialised at 50% on first run.
+      Inspired by <a href="https://grid.iamkate.com">grid.iamkate.com</a>.
+      <br>Contains BMRS data © Elexon Limited copyright and database right 2026.
+    </footer>
+
+  </div>
+
+  <div id="donut-tooltip"></div>
+
+  <script src="https://cdn.jsdelivr.net/npm/d3@7/dist/d3.min.js"></script>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js@4.4.0/dist/chart.umd.min.js"></script>
+  <script
+    src="https://cdn.jsdelivr.net/npm/chartjs-adapter-date-fns@3.0.0/dist/chartjs-adapter-date-fns.bundle.min.js"></script>
+
+  <script>
+    /* ── Config ────────────────────────────────────────────────────────────── */
+    const CONFIG = {
+      apiUrl: 'https://data.matthewryantucker.com/state.json',
+      recordsUrl: 'https://data.matthewryantucker.com/records.json',
+      batteryCapacityMwh: 50_000,
+      ldesCapacityMwh: 40_000,
+    };
+
+    /* ── Fuel definitions ───────────────────────────────────────────────────── */
+    const DISPATCH_FUELS = [
+      { key: 'offshore_dispatched_mw', label: 'Offshore wind', colour: '#0284c7' },
+      { key: 'onshore_dispatched_mw', label: 'Onshore wind', colour: '#38bdf8' },
+      { key: 'solar_dispatched_mw', label: 'Solar', colour: '#d97706' },
+      { key: 'nuclear_dispatched_mw', label: 'Nuclear', colour: '#7c3aed' },
+      { key: 'hydro_dispatched_mw', label: 'Hydro', colour: '#059669' },
+      { key: 'biomass_mw', label: 'Biomass', colour: '#16a34a' },
+      { key: 'battery_discharge_mw', label: 'Battery', colour: '#475569' },
+      { key: 'ldes_discharge_mw', label: 'LDES', colour: '#94a3b8' },
+      { key: 'gas_mw', label: 'Gas', colour: '#dc2626' },
+    ];
+
+    const CURTAIL_FUELS = [
+      { key: 'offshore_curtailed_mw', label: 'Offshore curtailed', colour: '#0284c7' },
+      { key: 'onshore_curtailed_mw', label: 'Onshore curtailed', colour: '#38bdf8' },
+      { key: 'solar_curtailed_mw', label: 'Solar curtailed', colour: '#d97706' },
+      { key: 'nuclear_curtailed_mw', label: 'Nuclear curtailed', colour: '#7c3aed' },
+      { key: 'hydro_curtailed_mw', label: 'Hydro curtailed', colour: '#059669' },
+    ];
+
+    function totalCurtailed(c) {
+      return CURTAIL_FUELS.reduce((s, f) => s + (c[f.key] || 0), 0);
+    }
+
+    /* ── Helpers ────────────────────────────────────────────────────────────── */
+    function mwToGw(mw) { return (mw / 1000).toFixed(1); }
+
+    function fmtDate(iso) {
+      try {
+        return new Date(iso).toLocaleString('en-GB', {
+          timeZone: 'Europe/London',
+          day: '2-digit', month: 'short', hour: '2-digit', minute: '2-digit',
+        }).replace(',', '');
+      } catch { return iso; }
+    }
+
+    /* ── Tooltip ────────────────────────────────────────────────────────────── */
+    const tooltipEl = document.getElementById('donut-tooltip');
+
+    function showTip(evt, text) {
+      tooltipEl.textContent = text;
+      tooltipEl.classList.add('visible');
+      moveTip(evt);
+    }
+    function moveTip(evt) {
+      tooltipEl.style.left = (evt.clientX + 14) + 'px';
+      tooltipEl.style.top = (evt.clientY - 32) + 'px';
+    }
+    function hideTip() { tooltipEl.classList.remove('visible'); }
+
+    /* ── D3 donut ───────────────────────────────────────────────────────────── */
+    // Geometry (SVG viewBox 260×260, centre 130,130)
+    const CX = 130, CY = 130;
+    const INNER_R = 72, OUTER_R = 110;   // inner generation donut
+    const OUTER_R2 = 120, OUTER_R3 = 130;   // outer surplus ring (small gap from donut)
+
+    function renderDonut(current) {
+      const svg = d3.select('#donut-svg');
+      svg.selectAll('*').remove();
+
+      const g = svg.append('g').attr('transform', `translate(${CX},${CY})`);
+      const demandMw = current.demand_mw || 1;
+
+      /* Inner donut — generation sources + imports, sums to 100% */
+      const importMw = Math.max(0, current.interconnector_mw || 0);
+      const genData = DISPATCH_FUELS
+        .map(f => ({ ...f, mw: current[f.key] || 0 }))
+        .filter(f => f.mw > 0);
+      if (importMw > 0) genData.push({ label: 'Imports', mw: importMw, colour: '#f97316' });
+
+      const totalGen = d3.sum(genData, d => d.mw);
+
+      const pie = d3.pie().value(d => d.mw).sort(null).padAngle(0.025);
+      const innerArc = d3.arc()
+        .innerRadius(INNER_R).outerRadius(OUTER_R).cornerRadius(3);
+
+      g.selectAll('.gen-slice')
+        .data(pie(genData))
+        .join('path')
+        .attr('class', 'gen-slice')
+        .attr('d', innerArc)
+        .attr('fill', d => d.data.colour)
+        .style('cursor', 'pointer')
+        .on('mousemove', (evt, d) => {
+          const pct = ((d.data.mw / totalGen) * 100).toFixed(1);
+          showTip(evt, `${d.data.label}: ${mwToGw(d.data.mw)} GW (${pct}% of generation)`);
+        })
+        .on('mouseleave', hideTip);
+
+      /* Centre label */
+      g.append('text')
+        .attr('text-anchor', 'middle').attr('dy', '-0.2em')
+        .attr('font-size', '1.35rem').attr('font-weight', '700').attr('fill', '#0f172a')
+        .text(mwToGw(demandMw));
+      g.append('text')
+        .attr('text-anchor', 'middle').attr('dy', '1.15em')
+        .attr('font-size', '0.65rem').attr('fill', '#64748b')
+        .text('GW demand');
+
+      /* Outer ring — surplus disposition, angles proportional to demand */
+      // Background track: full circle
+      g.append('path')
+        .attr('d', d3.arc()({
+          innerRadius: OUTER_R2, outerRadius: OUTER_R3,
+          startAngle: 0, endAngle: 2 * Math.PI,
+        }))
+        .attr('fill', '#e2e8f0');
+
+      // Segments: each angle = (mw / demandMw) × 2π, placed consecutively from top
+      const exportMw = Math.max(0, -(current.interconnector_mw || 0));
+      const storageMw = (current.battery_charge_mw || 0) + (current.ldes_charge_mw || 0);
+      const curtailSegs = CURTAIL_FUELS
+        .map(f => ({ label: f.label, mw: current[f.key] || 0, colour: f.colour }))
+        .filter(s => s.mw > 0);
+      const outerSegs = [
+        { label: 'Into storage', mw: storageMw, colour: '#0ea5e9' },
+        { label: 'Export', mw: exportMw, colour: '#6366f1' },
+        ...curtailSegs,
+      ];
+
+      const outerArc = d3.arc()
+        .innerRadius(OUTER_R2).outerRadius(OUTER_R3).cornerRadius(2);
+
+      let angle = 0;
+      outerSegs.forEach(seg => {
+        if (seg.mw <= 0) return;
+        const sweep = (seg.mw / demandMw) * 2 * Math.PI;
+        g.append('path')
+          .attr('d', outerArc({ startAngle: angle, endAngle: angle + sweep }))
+          .attr('fill', seg.colour)
+          .attr('opacity', curtailSegs.includes(seg) ? 0.45 : 1)
+          .style('cursor', 'pointer')
+          .on('mousemove', evt => {
+            const pct = ((seg.mw / demandMw) * 100).toFixed(1);
+            showTip(evt, `${seg.label}: ${mwToGw(seg.mw)} GW (${pct}% of demand)`);
+          })
+          .on('mouseleave', hideTip);
+        angle += sweep;
+      });
+
+      const curtailLegend = curtailSegs.length > 0
+        ? `<div class="legend-section-title">Curtailed</div>` +
+        `<div class="legend-rows">` +
+        curtailSegs.map(s =>
+          `<div class="legend-row">
+          <span class="legend-dot" style="background:${s.colour}; opacity:0.45; border-radius:2px"></span>
+          <span class="legend-label">${s.label}</span>
+          <span class="legend-value">${mwToGw(s.mw)} GW</span>
+        </div>`
+        ).join('') + `</div>`
+        : '';
+
+      const storageLegend = (storageMw > 0 || exportMw > 0)
+        ? `<div class="legend-section-title">Surplus</div>` +
+        `<div class="legend-rows">` +
+        [{ label: 'Into storage', mw: storageMw, colour: '#0ea5e9' }, { label: 'Export', mw: exportMw, colour: '#6366f1' }]
+          .filter(s => s.mw > 0)
+          .map(s => `<div class="legend-row">
+          <span class="legend-dot" style="background:${s.colour}; border-radius:2px"></span>
+          <span class="legend-label">${s.label}</span>
+          <span class="legend-value">${mwToGw(s.mw)} GW</span>
+        </div>`).join('') + `</div>`
+        : '';
+
+      /* Legend */
+      const legendEl = document.getElementById('donut-legend');
+      legendEl.innerHTML =
+        `<div class="legend-section-title">Generation</div>` +
+        `<div class="legend-rows">` +
+        genData.map(d => {
+          const pct = ((d.mw / totalGen) * 100).toFixed(0);
+          return `<div class="legend-row">
+        <span class="legend-dot" style="background:${d.colour}"></span>
+        <span class="legend-label">${d.label}</span>
+        <span class="legend-value">${mwToGw(d.mw)} GW</span>
+      </div>`;
+        }).join('') +
+        `</div>` +
+        storageLegend +
+        curtailLegend;
+    }
+
+    /* ── Stats ──────────────────────────────────────────────────────────────── */
+    function renderStats(data) {
+      const c = data.current;
+      document.getElementById('stat-demand').innerHTML =
+        `${mwToGw(c.demand_mw)}<span class="stat-unit"> GW</span>`;
+      document.getElementById('stat-offshore').innerHTML =
+        `${mwToGw(c.offshore_dispatched_mw)}<span class="stat-unit"> GW</span>`;
+      document.getElementById('stat-onshore').innerHTML =
+        `${mwToGw(c.onshore_dispatched_mw)}<span class="stat-unit"> GW</span>`;
+      document.getElementById('stat-solar').innerHTML =
+        `${mwToGw(c.solar_dispatched_mw)}<span class="stat-unit"> GW</span>`;
+      document.getElementById('stat-nuclear').innerHTML =
+        `${mwToGw(c.nuclear_dispatched_mw)}<span class="stat-unit"> GW</span>`;
+      document.getElementById('stat-wholesale-price').innerHTML =
+        c.wholesale_price_gbp !== null && c.wholesale_price_gbp !== undefined
+          ? `${c.wholesale_price_gbp.toFixed(1)}<span class="stat-unit"> £/MWh</span>`
+          : `—<span class="stat-unit"> £/MWh</span>`;
+      const hrs = data.hours_since_gas;
+      document.getElementById('stat-gasfree').innerHTML =
+        hrs !== null && hrs !== undefined
+          ? `${hrs}<span class="stat-unit"> hrs</span>`
+          : `—<span class="stat-unit"> hrs</span>`;
+
+      const gasEl = document.getElementById('stat-gas');
+      const gasMw = c.gas_mw || 0;
+      gasEl.style.color = gasMw > 0 ? '#dc2626' : '#16a34a';
+      gasEl.innerHTML = gasMw > 0
+        ? `${mwToGw(gasMw)}<span class="stat-unit"> GW</span>`
+        : `None`;
+
+      const curtMw = totalCurtailed(c);
+      const curtEl = document.getElementById('stat-curtailment');
+      curtEl.style.color = curtMw > 0 ? '#0284c7' : '#64748b';
+      curtEl.innerHTML = `${mwToGw(curtMw)}<span class="stat-unit"> GW</span>`;
+
+      const MARGINAL_LABELS = {
+        offshore_wind_ro: { label: 'Offshore wind', colour: '#0284c7' },
+        offshore_wind_cfd: { label: 'Offshore wind', colour: '#0284c7' },
+        onshore_wind_ro: { label: 'Onshore wind', colour: '#38bdf8' },
+        onshore_wind_cfd: { label: 'Onshore wind', colour: '#38bdf8' },
+        solar_legacy: { label: 'Solar', colour: '#d97706' },
+        solar_cfd: { label: 'Solar', colour: '#d97706' },
+        nuclear: { label: 'Nuclear', colour: '#7c3aed' },
+        hydro: { label: 'Hydro', colour: '#059669' },
+        battery_discharge: { label: 'Battery', colour: '#475569' },
+        ldes_discharge: { label: 'LDES', colour: '#94a3b8' },
+        biomass: { label: 'Biomass', colour: '#16a34a' },
+        gas_ccgt: { label: 'Gas (CCGT)', colour: '#dc2626' },
+        gas_ocgt: { label: 'Gas (OCGT)', colour: '#ef4444' },
+        unserved: { label: 'Unserved demand', colour: '#f97316' },
+      };
+      const margEl = document.getElementById('stat-marginal');
+      const mTech = c.marginal_tech || '';
+      // Strip ic_ prefix for interconnector marginals
+      const icMatch = mTech.match(/^ic_(.+)/);
+      let mLabel, mColour;
+      if (icMatch) {
+        mLabel = `Import (${icMatch[1]})`;
+        mColour = '#64748b';
+      } else {
+        const mInfo = MARGINAL_LABELS[mTech];
+        mLabel = mInfo ? mInfo.label : (mTech || '—');
+        mColour = mInfo ? mInfo.colour : '#64748b';
+      }
+      margEl.style.color = mColour;
+      margEl.textContent = mLabel || '—';
+
+      /* ── IC flows table ─────────────────────────────────────────────────────── */
+      const IC_ZONE_NAMES = {
+        FR: 'France',
+        BE: 'Belgium',
+        NL: 'Netherlands',
+        NO2: 'Norway',
+        DK1: 'Denmark',
+        DE: 'Germany',
+        IE: 'Ireland',
+      };
+      const icEl = document.getElementById('ic-flows-table');
+      let icFlows = {};
+      try { icFlows = JSON.parse(c.ic_flows_json || '{}'); } catch (e) { }
+      const icEntries = Object.entries(icFlows).filter(([, mw]) => mw !== 0);
+      if (icEntries.length === 0) {
+        icEl.innerHTML = '<span style="color:#64748b">No active interconnector flows</span>';
+      } else {
+        icEntries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
+        icEl.innerHTML = icEntries.map(([zone, mw]) => {
+          const name = IC_ZONE_NAMES[zone] || zone;
+          const isImp = mw > 0;
+          const colour = isImp ? '#0284c7' : '#f59e0b';
+          const arrow = isImp ? '▲ Import' : '▼ Export';
+          const absMw = Math.abs(mw);
+          return `<div style="display:flex;justify-content:space-between;max-width:280px;">` +
+            `<span>${name}</span>` +
+            `<span style="color:${colour}">${arrow} ${(absMw / 1000).toFixed(2)} GW</span>` +
+            `</div>`;
+        }).join('');
+      }
+    }
+
+    /* ── Storage ────────────────────────────────────────────────────────────── */
+    function renderStorage(data) {
+      const battPct = Math.min(100, (data.battery_soc_mwh / CONFIG.batteryCapacityMwh) * 100);
+      const ldesPct = Math.min(100, (data.ldes_soc_mwh / CONFIG.ldesCapacityMwh) * 100);
+
+      document.getElementById('batt-pct').textContent = battPct.toFixed(0) + '%';
+      document.getElementById('batt-bar').style.width = battPct + '%';
+      document.getElementById('batt-detail').textContent =
+        `${(data.battery_soc_mwh / 1000).toFixed(1)} / ${CONFIG.batteryCapacityMwh / 1000} GWh`;
+
+      document.getElementById('ldes-pct').textContent = ldesPct.toFixed(0) + '%';
+      document.getElementById('ldes-bar').style.width = ldesPct + '%';
+      document.getElementById('ldes-detail').textContent =
+        `${(data.ldes_soc_mwh / 1000).toFixed(1)} / ${CONFIG.ldesCapacityMwh / 1000} GWh`;
+    }
+
+    /* ── History chart ──────────────────────────────────────────────────────── */
+    let historyChart = null;
+
+    function buildChart(history) {
+      const labels = history.map(d => new Date(d.timestamp));
+
+      const datasets = DISPATCH_FUELS.map(f => ({
+        label: f.label,
+        data: history.map(d => (d[f.key] || 0) / 1000),
+        backgroundColor: f.colour + 'cc',
+        borderColor: f.colour,
+        borderWidth: 1,
+        pointRadius: 0,
+        fill: true,
+        tension: 0.3,
+        stack: 'gen',
+      }));
+
+      CURTAIL_FUELS.forEach(f => {
+        datasets.push({
+          label: f.label,
+          data: history.map(d => (d[f.key] || 0) / 1000),
+          backgroundColor: f.colour + '44',
+          borderColor: f.colour + '88',
+          borderWidth: 1,
+          borderDash: [3, 3],
+          pointRadius: 0,
+          fill: true,
+          tension: 0.3,
+          stack: 'gen',
+        });
+      });
+
+      datasets.push({
+        label: 'Demand',
+        data: history.map(d => (d.demand_mw || 0) / 1000),
+        borderColor: '#0f172a',
+        borderWidth: 2,
+        borderDash: [5, 4],
+        pointRadius: 0,
+        fill: false,
+        tension: 0.3,
+        order: -1,
+        stack: 'demand',
+      });
+
+      const ctx = document.getElementById('historyChart').getContext('2d');
+
+      if (historyChart) {
+        historyChart.data.labels = labels;
+        historyChart.data.datasets = datasets;
+        historyChart.update('none');
+        return;
+      }
+
+      historyChart = new Chart(ctx, {
+        type: 'line',
+        data: { labels, datasets },
+        options: {
+          responsive: true,
+          maintainAspectRatio: false,
+          interaction: { mode: 'index', intersect: false },
+          scales: {
+            x: {
+              type: 'time',
+              time: { unit: 'hour', displayFormats: { hour: 'HH:mm' } },
+              adapters: { date: {} },
+              ticks: { color: '#64748b', maxTicksLimit: 12, maxRotation: 0 },
+              grid: { color: '#e2e8f0' },
+            },
+            y: {
+              stacked: true,
+              min: 0,
+              ticks: { color: '#64748b', callback: v => v + ' GW' },
+              grid: { color: '#e2e8f0' },
+            },
+          },
+          plugins: {
+            legend: {
+              position: 'bottom',
+              labels: { color: '#64748b', boxWidth: 12, padding: 14, font: { size: 11 } },
+            },
+            tooltip: {
+              backgroundColor: '#ffffff',
+              titleColor: '#0f172a',
+              bodyColor: '#64748b',
+              borderColor: '#e2e8f0',
+              borderWidth: 1,
+              callbacks: { label: ctx => ` ${ctx.dataset.label}: ${ctx.parsed.y.toFixed(1)} GW` },
+            },
+          },
+        },
+      });
+    }
+
+    /* ── Main ───────────────────────────────────────────────────────────────── */
+    /* ── Records ────────────────────────────────────────────────────────────── */
+    function renderRecords(rec) {
+      document.getElementById('records-section').style.display = '';
+
+      const streak = rec.longest_gas_free_streak;
+      document.getElementById('rec-streak').innerHTML =
+        streak ? `${streak.value_hours}<span class="stat-unit"> hrs</span>` : `—`;
+      document.getElementById('rec-streak-when').textContent =
+        streak ? `${fmtDate(streak.start)} – ${fmtDate(streak.end)}` : '—';
+
+      const curt = rec.max_curtailment;
+      document.getElementById('rec-curtailment').innerHTML =
+        curt ? `${mwToGw(curt.value_mw)}<span class="stat-unit"> GW</span>` : `—`;
+      document.getElementById('rec-curtailment-when').textContent =
+        curt ? fmtDate(curt.timestamp) : '—';
+
+      const ren = rec.peak_renewables;
+      document.getElementById('rec-renewables').innerHTML =
+        ren ? `${mwToGw(ren.value_mw)}<span class="stat-unit"> GW</span>` : `—`;
+      document.getElementById('rec-renewables-when').textContent =
+        ren ? fmtDate(ren.timestamp) : '—';
+    }
+
+    /* ── Main ───────────────────────────────────────────────────────────────── */
+    function render(data) {
+      document.getElementById('last-updated').textContent =
+        'Last updated: ' + fmtDate(data.last_updated);
+      renderStats(data);
+      renderStorage(data);
+      renderDonut(data.current);
+      if (data.history?.length) buildChart(data.history);
+    }
+
+    async function fetchData() {
+      try {
+        const t = '?t=' + Date.now();
+        const [stateRes, recRes] = await Promise.all([
+          fetch(CONFIG.apiUrl + t),
+          fetch(CONFIG.recordsUrl + t),
+        ]);
+        if (!stateRes.ok) throw new Error('HTTP ' + stateRes.status);
+        const data = await stateRes.json();
+        localStorage.setItem('cp2030_cache', JSON.stringify(data));
+        render(data);
+        if (recRes.ok) {
+          const records = await recRes.json();
+          localStorage.setItem('cp2030_records_cache', JSON.stringify(records));
+          renderRecords(records);
+        }
+      } catch (err) {
+        console.error(err);
+        const cached = localStorage.getItem('cp2030_cache');
+        if (cached) {
+          render(JSON.parse(cached));
+          document.getElementById('last-updated').textContent +=
+            ' (server unavailable — showing cached data)';
+          const recCached = localStorage.getItem('cp2030_records_cache');
+          if (recCached) renderRecords(JSON.parse(recCached));
+        } else {
+          document.getElementById('last-updated').textContent = 'Could not load data';
+        }
+      }
+    }
+
+    fetchData();
+    setInterval(fetchData, 5 * 60 * 1000);
+  </script>
+</body>
+
+</html>
