@@ -404,18 +404,22 @@ def ocgt_srmc(gas_p=GAS_PRICE_P_PER_THERM, carbon=CARBON_PRICE_GBP_PER_TONNE):
 # ── Merit Order Builder ───────────────────────────────────────────────────────
 
 
-def _normal_bands(capacity_mw, mean, sigma, label, n=None):
+def _normal_bands(capacity_mw, mean, sigma, label, n=None, floor=None):
     """
     Divide capacity_mw into n equal bands (defaults to N_BANDS). Each band's
     price is drawn from an evenly-spaced quantile of N(mean, sigma). Deterministic;
     returns list of (mw, price, label) sorted ascending by price. Skips if capacity <= 0.
+    If floor is given, no band price will be set below it.
     """
     if capacity_mw <= 0:
         return []
     n = n or N_BANDS
     band_mw = capacity_mw / n
     quantiles = [(i + 0.5) / n for i in range(n)]
-    return [(band_mw, norm.ppf(q, mean, sigma), label) for q in quantiles]
+    bands = [(band_mw, norm.ppf(q, mean, sigma), label) for q in quantiles]
+    if floor is not None:
+        bands = [(mw, max(p, floor), l) for mw, p, l in bands]
+    return bands
 
 
 def build_merit_order(
@@ -594,11 +598,13 @@ def estimate_wholesale_price(
         bat_discharge_bid,
         BATTERY_DISCHARGE_SIGMA,
         "battery_discharge",
+        floor=max_bat_charge_price,
     ) + _normal_bands(
         ldes_discharge_avail_mw,
         ldes_discharge_bid,
         LDES_DISCHARGE_SIGMA,
         "ldes_discharge",
+        floor=max_ldes_charge_price,
     )
     all_bands = sorted(
         build_merit_order(

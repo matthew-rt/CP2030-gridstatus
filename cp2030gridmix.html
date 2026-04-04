@@ -745,34 +745,51 @@
       margEl.textContent = mLabel || '—';
 
       /* ── IC flows table ─────────────────────────────────────────────────────── */
+      const IC_FLAGS = {
+        FR: '🇫🇷', BE: '🇧🇪', NL: '🇳🇱', NO2: '🇳🇴', DK1: '🇩🇰', DE: '🇩🇪', IE: '🇮🇪',
+      };
       const IC_ZONE_NAMES = {
-        FR: 'France',
-        BE: 'Belgium',
-        NL: 'Netherlands',
-        NO2: 'Norway',
-        DK1: 'Denmark',
-        DE: 'Germany',
-        IE: 'Ireland',
+        FR: 'France', BE: 'Belgium', NL: 'Netherlands',
+        NO2: 'Norway', DK1: 'Denmark', DE: 'Germany', IE: 'Ireland',
       };
       const icEl = document.getElementById('ic-flows-table');
-      let icFlows = {};
-      try { icFlows = JSON.parse(c.ic_flows_json || '{}'); } catch (e) { }
+      let icFlows = {}, icPrices = {};
+      try { icFlows  = JSON.parse(c.ic_flows_json  || '{}'); } catch (e) { }
+      try { icPrices = JSON.parse(c.ic_prices_json || '{}'); } catch (e) { }
       const icEntries = Object.entries(icFlows).filter(([, mw]) => mw !== 0);
       if (icEntries.length === 0) {
         icEl.innerHTML = '<span style="color:#64748b">No active interconnector flows</span>';
       } else {
-        icEntries.sort((a, b) => Math.abs(b[1]) - Math.abs(a[1]));
-        icEl.innerHTML = icEntries.map(([zone, mw]) => {
+        const imports = icEntries.filter(([, mw]) => mw > 0).sort((a, b) => b[1] - a[1]);
+        const exports = icEntries.filter(([, mw]) => mw < 0).sort((a, b) => a[1] - b[1]);
+        const maxRows = Math.max(imports.length, exports.length);
+
+        function icRow(zone, mw) {
+          if (!zone) return `<div style="height:1.8em"></div>`;
+          const flag = IC_FLAGS[zone] || '';
           const name = IC_ZONE_NAMES[zone] || zone;
           const isImp = mw > 0;
           const colour = isImp ? '#0284c7' : '#f59e0b';
-          const arrow = isImp ? '▲ Import' : '▼ Export';
-          const absMw = Math.abs(mw);
-          return `<div style="display:flex;justify-content:space-between;max-width:280px;">` +
-            `<span>${name}</span>` +
-            `<span style="color:${colour}">${arrow} ${(absMw / 1000).toFixed(2)} GW</span>` +
+          const arrow = isImp ? '▲' : '▼';
+          const absMw = (Math.abs(mw) / 1000).toFixed(2);
+          const fp = icPrices[zone];
+          const tooltip = fp != null ? `title="${name}: £${fp.toFixed(1)}/MWh"` : `title="${name}"`;
+          return `<div style="display:flex;align-items:center;gap:4px;line-height:1.8;cursor:default" ${tooltip}>` +
+            `<span>${flag}</span>` +
+            `<span style="color:${colour}">${arrow} ${absMw} GW</span>` +
             `</div>`;
-        }).join('');
+        }
+
+        const colStyle = 'display:flex;flex-direction:column;flex:1';
+        const headStyle = 'font-size:0.75rem;color:#94a3b8;margin-bottom:2px';
+        let html = `<div style="display:flex;gap:8px;font-size:0.85rem">`;
+        html += `<div style="${colStyle}"><div style="${headStyle}">Importing from</div>`;
+        for (let i = 0; i < maxRows; i++) html += icRow(imports[i]?.[0], imports[i]?.[1]);
+        html += `</div>`;
+        html += `<div style="${colStyle}"><div style="${headStyle}">Exporting to</div>`;
+        for (let i = 0; i < maxRows; i++) html += icRow(exports[i]?.[0], exports[i]?.[1]);
+        html += `</div></div>`;
+        icEl.innerHTML = html;
       }
     }
 
