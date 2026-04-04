@@ -76,6 +76,7 @@ ENTSO_PRICES_FILE = os.environ.get(
 )
 GAS_PRICE_FILE = os.environ.get("GAS_PRICE_FILE", "/var/www/cp2030/gas_price.json")
 RAW_DB_FILE = os.environ.get("RAW_DB_FILE", "/var/www/cp2030/raw_history.db")
+HISTORY_FILE = os.environ.get("HISTORY_FILE", "/var/www/cp2030/history.json")
 HISTORY_SIZE = 48  # 24 hours of half-hourly readings
 
 # ── API ──────────────────────────────────────────────────────────────────────
@@ -396,7 +397,7 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     if gas_p is not None:
         price_kwargs["gas_p"] = gas_p
 
-    wholesale_price, marginal_tech, ic_exports, storage_flows, dispatch = (
+    wholesale_price, marginal_tech, ic_exports, storage_flows, dispatch, ic_foreign_prices = (
         estimate_wholesale_price(
             offshore_mw=gen["offshore_mw"],
             onshore_mw=gen["onshore_mw"],
@@ -439,13 +440,17 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     net_ic = round(ic_import_mw - ic_export_mw)
 
     # Per-country net flows (positive = import into UK, negative = export from UK)
+    # and the foreign wholesale price used for each zone
     ic_by_country = {}
+    ic_price_by_zone = {}
     for name, *_ in INTERCONNECTORS:
         zone = IC_AREA.get(name, name)
         imp = dispatch.get(f"ic_{name}", 0)
         exp = ic_exports.get(name, 0)
         ic_by_country[zone] = ic_by_country.get(zone, 0) + round(imp - exp)
+        ic_price_by_zone[zone] = ic_foreign_prices.get(name, None)
     ic_flows_json = json.dumps(ic_by_country)
+    ic_prices_json = json.dumps(ic_price_by_zone)
 
     # ── Update storage SoC ────────────────────────────────────────────────────
     battery_charge_mw = storage_flows["battery_charge_mw"]
@@ -484,6 +489,7 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
         "ldes_discharge_mw": ldes_discharge_mw,
         "interconnector_mw": net_ic,
         "ic_flows_json": ic_flows_json,
+        "ic_prices_json": ic_prices_json,
         "battery_soc_mwh": round(battery_soc),
         "ldes_soc_mwh": round(ldes_soc),
         "wholesale_price_gbp": wholesale_price,
@@ -777,6 +783,19 @@ def load_state():
     }
 
 
+def export_history(db_path, out_file):
+    """Export full history DB to JSON for the replay page. Atomic write."""
+    with sqlite3.connect(db_path) as con:
+        con.row_factory = sqlite3.Row
+        rows = con.execute("SELECT * FROM history ORDER BY timestamp").fetchall()
+    data = [dict(r) for r in rows]
+    tmp = out_file + ".tmp"
+    with open(tmp, "w") as f:
+        json.dump(data, f)
+    os.replace(tmp, out_file)
+    print(f"Exported {len(data)} rows to {out_file}")
+
+
 def save_state(state):
     """Write atomically so a web client never reads a partial file."""
     os.makedirs(os.path.dirname(STATE_FILE), exist_ok=True)
@@ -825,6 +844,7 @@ def main():
     records = update_records(DB_FILE, state["current"])
     save_records(records, RECORDS_FILE)
 
+    export_history(DB_FILE, HISTORY_FILE)
     save_state(state)
     print(f"[{state['last_updated']}] Updated {STATE_FILE}")
 

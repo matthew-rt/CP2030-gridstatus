@@ -610,12 +610,18 @@ def estimate_wholesale_price(
     )
 
     # ── Analytical storage charging ───────────────────────────────────────────
-    supply_at_bat_price = sum(mw for mw, p, _ in all_bands if p <= max_bat_charge_price)
+    # Exclude storage discharge bands: charging surplus must come from other generators,
+    # not from the storage unit's own discharge (which would double-count those MWs).
+    non_storage_bands = [
+        (mw, p, l) for mw, p, l in all_bands
+        if l not in ("battery_discharge", "ldes_discharge")
+    ]
+    supply_at_bat_price = sum(mw for mw, p, _ in non_storage_bands if p <= max_bat_charge_price)
     bat_surplus = max(0.0, supply_at_bat_price - demand_mw)
     battery_charge_mw = min(bat_charge_avail_mw, bat_surplus)
 
     supply_at_ldes_price = sum(
-        mw for mw, p, _ in all_bands if p <= max_ldes_charge_price
+        mw for mw, p, _ in non_storage_bands if p <= max_ldes_charge_price
     )
     ldes_surplus = max(0.0, supply_at_ldes_price - demand_mw - battery_charge_mw)
     ldes_charge_mw = min(ldes_charge_avail_mw, ldes_surplus)
@@ -650,7 +656,10 @@ def estimate_wholesale_price(
         "ldes_charge_mw": round(ldes_charge_mw),
     }
 
-    return price, marginal, ic_exports, storage_flows, dispatch
+    # Per-link foreign prices actually used in dispatch (GBP, after EUR conversion)
+    ic_foreign_prices = {name: round(fp, 2) for name, (_, fp, _) in ic_params.items()}
+
+    return price, marginal, ic_exports, storage_flows, dispatch, ic_foreign_prices
 
 
 # ── Scenario Tests ────────────────────────────────────────────────────────────
@@ -797,7 +806,7 @@ if __name__ == "__main__":
     ]
 
     for s in scenarios:
-        price, marginal, ic_exports, storage, dispatch = estimate_wholesale_price(
+        price, marginal, ic_exports, storage, dispatch, _ic_fp = estimate_wholesale_price(
             s["offshore_mw"],
             s["onshore_mw"],
             s["solar_mw"],

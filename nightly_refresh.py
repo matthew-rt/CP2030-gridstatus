@@ -1,23 +1,19 @@
 #!/usr/bin/env python3
 """
-Nightly cache refresh: exports CP2030 history DB to history.json for the
-replay page, and fetches + caches ENTSO-E day-ahead prices and the UK natural
-gas price for the price model.
+Nightly cache refresh: fetches and caches ENTSO-E day-ahead prices and the UK
+natural gas price for the price model.
+
+History DB export (history.json) is now handled by cp2030.py on every run.
 
 Intended to run nightly via cron:
-  0 0 * * * /opt/cp2030/venv/bin/python3 /opt/cp2030/nightly_refresh.py >> /var/log/cp2030_nightly.log 2>&1
+  0 23 * * * /opt/cp2030/venv/bin/python3 /opt/cp2030/nightly_refresh.py >> /var/log/cp2030_nightly.log 2>&1
 
 API keys are loaded from /opt/cp2030/.env (not in git). Copy via:
   scp .env user@server:/opt/cp2030/.env
-
-Writes atomically to avoid the replay page reading a partial file.
-Override paths with env vars for local testing:
-  DB_FILE=/tmp/test.db OUT_FILE=/tmp/history.json python nightly_refresh.py
 """
 
 import json
 import os
-import sqlite3
 import sys
 from pathlib import Path
 
@@ -33,29 +29,12 @@ if _env_path.exists():
 sys.path.insert(0, os.path.dirname(__file__))
 from cp2030price import fetch_entso_prices, fetch_gas_price, fetch_eur_to_gbp
 
-DB_FILE          = os.environ.get("DB_FILE",          "/var/www/cp2030/history.db")
-OUT_FILE         = os.environ.get("OUT_FILE",          "/var/www/cp2030/history.json")
 ENTSO_PRICES_FILE = os.environ.get("ENTSO_PRICES_FILE", "/var/www/cp2030/entso_prices.json")
 GAS_PRICE_FILE    = os.environ.get("GAS_PRICE_FILE",    "/var/www/cp2030/gas_price.json")
 
 errors = []
 
-# ── 1. Export history DB to JSON ──────────────────────────────────────────────
-try:
-    with sqlite3.connect(DB_FILE) as con:
-        con.row_factory = sqlite3.Row
-        rows = con.execute("SELECT * FROM history ORDER BY timestamp").fetchall()
-    data = [dict(r) for r in rows]
-    tmp = OUT_FILE + ".tmp"
-    with open(tmp, "w") as f:
-        json.dump(data, f)
-    os.replace(tmp, OUT_FILE)
-    print(f"Exported {len(data)} rows to {OUT_FILE}")
-except Exception as e:
-    print(f"ERROR: DB export failed: {e}")
-    errors.append("db_export")
-
-# ── 2. Fetch and cache ENTSO-E prices ─────────────────────────────────────────
+# ── 1. Fetch and cache ENTSO-E prices ─────────────────────────────────────────
 try:
     eur_to_gbp = fetch_eur_to_gbp()
     print(f"EUR/GBP rate: {eur_to_gbp}")
@@ -78,7 +57,7 @@ except Exception as e:
     print(f"ERROR: ENTSO-E fetch failed: {e} — keeping existing cache")
     errors.append("entso_fetch")
 
-# ── 3. Fetch and append gas price ─────────────────────────────────────────────
+# ── 2. Fetch and append gas price ─────────────────────────────────────────────
 try:
     from datetime import date as _date
     gas_api_key = os.environ.get("OIL_PRICE_API_KEY")
