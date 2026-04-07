@@ -598,13 +598,13 @@ def estimate_wholesale_price(
         bat_discharge_bid,
         BATTERY_DISCHARGE_SIGMA,
         "battery_discharge",
-        floor=max_bat_charge_price,
+        floor=max_bat_charge_price + 0.01,
     ) + _normal_bands(
         ldes_discharge_avail_mw,
         ldes_discharge_bid,
         LDES_DISCHARGE_SIGMA,
         "ldes_discharge",
-        floor=max_ldes_charge_price,
+        floor=max_ldes_charge_price + 0.01,
     )
     all_bands = sorted(
         build_merit_order(
