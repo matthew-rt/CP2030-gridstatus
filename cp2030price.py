@@ -645,7 +645,7 @@ def estimate_wholesale_price(
     ):
         cap, foreign_p, thresh = ic_params[name]
         export_threshold = foreign_p - thresh
-        supply_at_export = sum(mw for mw, p, _ in all_bands if p <= export_threshold)
+        supply_at_export = sum(mw for mw, p, _ in non_storage_bands if p <= export_threshold)
         surplus = max(0.0, supply_at_export - effective_demand)
         export_mw = min(cap, surplus)
         if export_mw > 0:
