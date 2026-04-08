@@ -586,58 +586,37 @@ def estimate_wholesale_price(
         for name, cap, default_fp, thresh in INTERCONNECTORS
     }
 
-    # ── Full supply stack: generation + storage discharge + IC imports ────────
-    # IC import bands sit at (foreign_p + threshold). They are always present;
-    # they only get dispatched if the clearing price reaches that level.
+    # ── Base supply stack: generation + IC imports only (no storage discharge) ──
+    # Storage discharge is added later only if we are not in charging mode.
+    # Keeping them separate enforces mutual exclusion: a storage unit cannot
+    # charge and discharge in the same settlement period.
     ic_import_bands = [
         (cap, foreign_p + thresh, f"ic_{name}")
         for name, (cap, foreign_p, thresh) in ic_params.items()
     ]
-    storage_discharge_bands = _normal_bands(
-        bat_discharge_avail_mw,
-        bat_discharge_bid,
-        BATTERY_DISCHARGE_SIGMA,
-        "battery_discharge",
-        floor=max_bat_charge_price + 0.01,
-    ) + _normal_bands(
-        ldes_discharge_avail_mw,
-        ldes_discharge_bid,
-        LDES_DISCHARGE_SIGMA,
-        "ldes_discharge",
-        floor=max_ldes_charge_price + 0.01,
-    )
-    all_bands = sorted(
+    base_bands = sorted(
         build_merit_order(
             offshore_mw, onshore_mw, solar_mw, nuclear_mw, hydro_mw, gas_p, carbon
         )
-        + storage_discharge_bands
         + ic_import_bands,
         key=lambda x: x[1],
     )
 
     # ── Analytical storage charging ───────────────────────────────────────────
-    # Exclude storage discharge bands: charging surplus must come from other generators,
-    # not from the storage unit's own discharge (which would double-count those MWs).
-    non_storage_bands = [
-        (mw, p, l) for mw, p, l in all_bands
-        if l not in ("battery_discharge", "ldes_discharge")
-    ]
-    supply_at_bat_price = sum(mw for mw, p, _ in non_storage_bands if p <= max_bat_charge_price)
+    # Surplus at or below the charge price ceiling (from non-storage supply only)
+    # determines how much storage can charge this period.
+    supply_at_bat_price = sum(mw for mw, p, _ in base_bands if p <= max_bat_charge_price)
     bat_surplus = max(0.0, supply_at_bat_price - demand_mw)
     battery_charge_mw = min(bat_charge_avail_mw, bat_surplus)
 
-    supply_at_ldes_price = sum(
-        mw for mw, p, _ in non_storage_bands if p <= max_ldes_charge_price
-    )
+    supply_at_ldes_price = sum(mw for mw, p, _ in base_bands if p <= max_ldes_charge_price)
     ldes_surplus = max(0.0, supply_at_ldes_price - demand_mw - battery_charge_mw)
     ldes_charge_mw = min(ldes_charge_avail_mw, ldes_surplus)
 
     # ── Analytical IC exports ─────────────────────────────────────────────────
     # Each IC absorbs surplus below its export threshold (foreign_p − threshold).
     # Process highest-value export market first so premium markets claim surplus first.
-    # Mutual exclusion: an IC's import bid (foreign_p + threshold) is always above its
-    # export threshold, so if surplus exists at the export threshold the import band
-    # has not been dispatched, and if there is no surplus the IC will import instead.
+    # Uses base_bands only so storage discharge capacity cannot inflate export volumes.
     ic_exports = {}
     effective_demand = demand_mw + battery_charge_mw + ldes_charge_mw
     for name in sorted(
@@ -645,15 +624,36 @@ def estimate_wholesale_price(
     ):
         cap, foreign_p, thresh = ic_params[name]
         export_threshold = foreign_p - thresh
-        supply_at_export = sum(mw for mw, p, _ in non_storage_bands if p <= export_threshold)
+        supply_at_export = sum(mw for mw, p, _ in base_bands if p <= export_threshold)
         surplus = max(0.0, supply_at_export - effective_demand)
         export_mw = min(cap, surplus)
         if export_mw > 0:
             ic_exports[name] = round(export_mw)
             effective_demand += export_mw
 
+    # ── Build final clearing stack ────────────────────────────────────────────
+    # Only add discharge bands if no storage is charging this period.
+    # This enforces mutual exclusion at the band level rather than post-hoc.
+    if battery_charge_mw == 0 and ldes_charge_mw == 0:
+        storage_discharge_bands = _normal_bands(
+            bat_discharge_avail_mw,
+            bat_discharge_bid,
+            BATTERY_DISCHARGE_SIGMA,
+            "battery_discharge",
+            floor=max_bat_charge_price + 0.01,
+        ) + _normal_bands(
+            ldes_discharge_avail_mw,
+            ldes_discharge_bid,
+            LDES_DISCHARGE_SIGMA,
+            "ldes_discharge",
+            floor=max_ldes_charge_price + 0.01,
+        )
+        clearing_bands = sorted(base_bands + storage_discharge_bands, key=lambda x: x[1])
+    else:
+        clearing_bands = base_bands
+
     # ── Single clearing pass ──────────────────────────────────────────────────
-    price, marginal, dispatch = _find_clearing(all_bands, effective_demand)
+    price, marginal, dispatch = _find_clearing(clearing_bands, effective_demand)
 
     storage_flows = {
         "battery_discharge_avail_mw": round(bat_discharge_avail_mw),
