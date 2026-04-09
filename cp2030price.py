@@ -586,74 +586,72 @@ def estimate_wholesale_price(
         for name, cap, default_fp, thresh in INTERCONNECTORS
     }
 
-    # ── Base supply stack: generation + IC imports only (no storage discharge) ──
-    # Storage discharge is added later only if we are not in charging mode.
-    # Keeping them separate enforces mutual exclusion: a storage unit cannot
-    # charge and discharge in the same settlement period.
+    # ── Supply stack ──────────────────────────────────────────────────────────
+    # All generation, storage discharge, and IC import bands sorted ascending.
+    # Storage discharge is floored just above max_charge_price so that discharge
+    # and charge bids cannot both be active at the same clearing price.
     ic_import_bands = [
         (cap, foreign_p + thresh, f"ic_{name}")
         for name, (cap, foreign_p, thresh) in ic_params.items()
     ]
-    base_bands = sorted(
-        build_merit_order(
-            offshore_mw, onshore_mw, solar_mw, nuclear_mw, hydro_mw, gas_p, carbon
-        )
+    storage_discharge_bands = _normal_bands(
+        bat_discharge_avail_mw, bat_discharge_bid, BATTERY_DISCHARGE_SIGMA,
+        "battery_discharge", floor=max_bat_charge_price + 0.01,
+    ) + _normal_bands(
+        ldes_discharge_avail_mw, ldes_discharge_bid, LDES_DISCHARGE_SIGMA,
+        "ldes_discharge", floor=max_ldes_charge_price + 0.01,
+    )
+    supply_bands = sorted(
+        build_merit_order(offshore_mw, onshore_mw, solar_mw, nuclear_mw, hydro_mw, gas_p, carbon)
+        + storage_discharge_bands
         + ic_import_bands,
         key=lambda x: x[1],
     )
 
-    # ── Analytical storage charging ───────────────────────────────────────────
-    # Surplus at or below the charge price ceiling (from non-storage supply only)
-    # determines how much storage can charge this period.
-    supply_at_bat_price = sum(mw for mw, p, _ in base_bands if p <= max_bat_charge_price)
-    bat_surplus = max(0.0, supply_at_bat_price - demand_mw)
-    battery_charge_mw = min(bat_charge_avail_mw, bat_surplus)
+    # ── Demand bids (flexible demand beyond base load) ────────────────────────
+    # IC exports: willing to buy GB electricity up to (foreign_p - threshold).
+    # Storage: willing to charge up to max_charge_price.
+    # Sorted descending by willingness to pay so highest-value demand enters first.
+    demand_bids = []
+    for name, (cap, foreign_p, thresh) in ic_params.items():
+        demand_bids.append((cap, foreign_p - thresh, f"ic_export_{name}"))
+    demand_bids.append((bat_charge_avail_mw,  max_bat_charge_price,  "battery_charge"))
+    demand_bids.append((ldes_charge_avail_mw, max_ldes_charge_price, "ldes_charge"))
+    demand_bids.sort(key=lambda x: -x[1])
 
-    supply_at_ldes_price = sum(mw for mw, p, _ in base_bands if p <= max_ldes_charge_price)
-    ldes_surplus = max(0.0, supply_at_ldes_price - demand_mw - battery_charge_mw)
-    ldes_charge_mw = min(ldes_charge_avail_mw, ldes_surplus)
+    # ── Two-sided clearing ────────────────────────────────────────────────────
+    # Walk demand bids in descending order of willingness to pay. For each bid,
+    # check how much headroom remains in the supply stack at or below the bid's
+    # max price. Accept the full quantity if it fits; accept the residual headroom
+    # and stop if not. This naturally enforces mutual exclusion between storage
+    # charge (max £10) and discharge (floor £10.01): they cannot both clear at
+    # the same price.
+    effective_demand = demand_mw
+    accepted = {}
+    for bid_mw, bid_max_price, bid_label in demand_bids:
+        if bid_mw <= 0:
+            continue
+        supply_at_max = sum(mw for mw, p, _ in supply_bands if p <= bid_max_price)
+        if supply_at_max <= effective_demand:
+            break  # clearing price already above this bid's max; stop
+        headroom = supply_at_max - effective_demand
+        accepted_mw = min(bid_mw, headroom)
+        accepted[bid_label] = accepted_mw
+        effective_demand += accepted_mw
+        if accepted_mw < bid_mw:
+            break  # headroom exhausted; no room for lower-priced bids
 
-    # ── Analytical IC exports ─────────────────────────────────────────────────
-    # Each IC absorbs surplus below its export threshold (foreign_p − threshold).
-    # Process highest-value export market first so premium markets claim surplus first.
-    # Uses base_bands only so storage discharge capacity cannot inflate export volumes.
-    ic_exports = {}
-    effective_demand = demand_mw + battery_charge_mw + ldes_charge_mw
-    for name in sorted(
-        ic_params, key=lambda n: ic_params[n][1] - ic_params[n][2], reverse=True
-    ):
-        cap, foreign_p, thresh = ic_params[name]
-        export_threshold = foreign_p - thresh
-        supply_at_export = sum(mw for mw, p, _ in base_bands if p <= export_threshold)
-        surplus = max(0.0, supply_at_export - effective_demand)
-        export_mw = min(cap, surplus)
-        if export_mw > 0:
-            ic_exports[name] = round(export_mw)
-            effective_demand += export_mw
+    # ── Final clearing pass ───────────────────────────────────────────────────
+    price, marginal, dispatch = _find_clearing(supply_bands, effective_demand)
 
-    # ── Build final clearing stack ────────────────────────────────────────────
-    # Only add discharge bands if no storage is charging this period.
-    # This enforces mutual exclusion at the band level rather than post-hoc.
-    if battery_charge_mw == 0 and ldes_charge_mw == 0:
-        storage_discharge_bands = _normal_bands(
-            bat_discharge_avail_mw,
-            bat_discharge_bid,
-            BATTERY_DISCHARGE_SIGMA,
-            "battery_discharge",
-            floor=max_bat_charge_price + 0.01,
-        ) + _normal_bands(
-            ldes_discharge_avail_mw,
-            ldes_discharge_bid,
-            LDES_DISCHARGE_SIGMA,
-            "ldes_discharge",
-            floor=max_ldes_charge_price + 0.01,
-        )
-        clearing_bands = sorted(base_bands + storage_discharge_bands, key=lambda x: x[1])
-    else:
-        clearing_bands = base_bands
-
-    # ── Single clearing pass ──────────────────────────────────────────────────
-    price, marginal, dispatch = _find_clearing(clearing_bands, effective_demand)
+    # ── Extract accepted flexible demand ──────────────────────────────────────
+    battery_charge_mw = accepted.get("battery_charge", 0.0)
+    ldes_charge_mw    = accepted.get("ldes_charge",    0.0)
+    ic_exports = {
+        name: round(accepted[f"ic_export_{name}"])
+        for name in ic_params
+        if f"ic_export_{name}" in accepted and accepted[f"ic_export_{name}"] > 0
+    }
 
     storage_flows = {
         "battery_discharge_avail_mw": round(bat_discharge_avail_mw),
