@@ -194,23 +194,39 @@ def _neso_query(sql):
 
 def fetch_neso(date_str, sp):
     """Fetch embedded wind and solar forecast from NESO.
-    Falls back to the most recent available record if the current SP isn't published yet.
+
+    date_str is already in UK local time (computed by current_settlement_period
+    using UK_TZ), so it represents the correct settlement date even when the
+    server is not in the UK.
+
+    Primary query: exact match for today's settlement date and period.
+    Fallback: most recent past record with the same settlement period (same time
+    of day), in case the current SP hasn't been published yet.
+
+    NESO stores SETTLEMENT_DATE as an ISO timestamp (e.g. '2026-04-09T00:00:00').
+    We use the date portion with LIKE to avoid millisecond/timezone suffix mismatches.
+    We never use >= or ORDER BY date DESC because the dataset is a rolling ~14-day
+    forecast — the most recent _id is always a future period, not the current one.
     """
+    date_only = date_str[:10]  # "YYYY-MM-DD", already in UK local time
+
     records = _neso_query(
         f'SELECT * FROM "{NESO_DATASET}" '
-        f"WHERE \"SETTLEMENT_DATE\" >= '{date_str}' AND \"SETTLEMENT_PERIOD\" = '{sp}' "
+        f"WHERE \"SETTLEMENT_DATE\" LIKE '{date_only}%' AND \"SETTLEMENT_PERIOD\" = '{sp}' "
         f'ORDER BY "_id" DESC LIMIT 1'
     )
     if not records:
+        # Current SP not yet published — use most recent past record at the same
+        # time of day (same SP number) so the diurnal pattern is preserved.
         records = _neso_query(
             f'SELECT * FROM "{NESO_DATASET}" '
-            f'ORDER BY "SETTLEMENT_DATE" DESC, "SETTLEMENT_PERIOD" DESC LIMIT 1'
+            f"WHERE \"SETTLEMENT_DATE\" < '{date_only}T00:00:00' AND \"SETTLEMENT_PERIOD\" = '{sp}' "
+            f'ORDER BY "SETTLEMENT_DATE" DESC, "_id" DESC LIMIT 1'
         )
     if not records:
         raise RuntimeError("No NESO embedded generation data available")
 
     r = records[0]
-    print(r)
     return {
         "embedded_wind_mw": r["EMBEDDED_WIND_FORECAST"],
         "embedded_wind_capacity_mw": r["EMBEDDED_WIND_CAPACITY"],
