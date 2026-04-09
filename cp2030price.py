@@ -488,18 +488,30 @@ def _find_clearing(bands, demand_mw):
     Walk up a sorted supply stack until cumulative MW meets demand.
     Returns (price, marginal_label, dispatch) where dispatch is a dict of
     {label: mw_dispatched} for every band that was called upon.
+
+    A 1e-6 MW tolerance guards against floating point residuals at the boundary
+    between charging and discharge bands. Without it, when effective_demand equals
+    exactly supply_at_max_for_£10 (headroom-limited charging), sub-microwatt FP
+    rounding can cause a discharge band to be dispatched for ε MW and incorrectly
+    become the marginal technology.
     """
+    _TOL = 1e-6  # MW — negligible compared to GW-scale dispatch
     cumulative = 0.0
     dispatch = {}
+    last_price, last_label = 0.0, "none"
     for mw, price, label in bands:
         remaining = demand_mw - cumulative
-        if remaining <= 0:
+        if remaining <= _TOL:  # demand met within float tolerance
             break
         dispatched = min(mw, remaining)
         dispatch[label] = dispatch.get(label, 0) + dispatched
         cumulative += dispatched
-        if cumulative >= demand_mw:
+        last_price, last_label = price, label
+        if cumulative >= demand_mw - _TOL:
             return round(price, 2), label, dispatch
+    # Loop exited via tolerance break — demand was met, float residual only
+    if demand_mw - cumulative <= _TOL and last_label != "none":
+        return round(last_price, 2), last_label, dispatch
     total = sum(b[0] for b in bands)
     print(f"WARNING: demand {demand_mw:,.0f} MW exceeds total supply {total:,.0f} MW")
     return round(bands[-1][1], 2) if bands else 0.0, "unserved", dispatch
