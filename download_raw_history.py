@@ -28,7 +28,7 @@ import sqlite3
 import sys
 import time
 from collections import defaultdict
-from datetime import date, datetime, timedelta, timezone
+from datetime import date, datetime, timedelta
 from pathlib import Path
 from urllib import parse
 from zoneinfo import ZoneInfo
@@ -46,11 +46,7 @@ UK_TZ = ZoneInfo("Europe/London")
 ELEXON_FUEL_URL = "https://data.elexon.co.uk/bmrs/api/v1/datasets/FUELINST"
 ELEXON_IC_URL   = "https://data.elexon.co.uk/bmrs/api/v1/generation/outturn/interconnectors"
 NESO_URL        = "https://api.neso.energy/api/3/action/datastore_search_sql"
-NESO_DATASET    = "f93d1835-75bc-43e5-84ad-12472b180a98"  # historical 30-min embedded gen
-
-# Fixed capacity estimates (actual values ~Jan 2026; no capacity fields in this dataset)
-EMBEDDED_WIND_CAPACITY_MW  = 6606
-EMBEDDED_SOLAR_CAPACITY_MW = 22205
+NESO_DATASET    = "d6375700-69c2-4c25-8bde-883a205d742e"  # historical 30-min embedded gen with capacity fields
 
 # ── DB init ───────────────────────────────────────────────────────────────────
 
@@ -193,12 +189,12 @@ def fetch_interconnectors_day(d):
 def fetch_neso_bulk(start_date):
     """Fetch all NESO embedded wind/solar records from start_date onwards.
 
-    Uses dataset f93d1835 which has 30-minute UTC DATETIME, WIND_EMB, and SOLAR
-    fields going back to 2009. Paginates automatically.
+    Uses dataset d6375700 which has SETTLEMENT_DATE, SETTLEMENT_PERIOD,
+    EMBEDDED_WIND_FORECAST, EMBEDDED_WIND_CAPACITY, EMBEDDED_SOLAR_FORECAST,
+    and EMBEDDED_SOLAR_CAPACITY fields. Paginates automatically.
 
-    Returns a list of dicts with keys: DATETIME, WIND_EMB, SOLAR.
+    Returns a list of dicts with those keys.
     """
-    # Dataset DATETIME column is UTC ISO strings like '2026-01-01T00:00:00'
     start_str = f"{start_date.isoformat()}T00:00:00"
     all_records = []
     offset = 0
@@ -206,9 +202,12 @@ def fetch_neso_bulk(start_date):
 
     while True:
         sql = (
-            f'SELECT "DATETIME", "WIND_EMB", "SOLAR" FROM "{NESO_DATASET}" '
-            f'WHERE "DATETIME" >= \'{start_str}\' '
-            f'ORDER BY "DATETIME" '
+            f'SELECT "SETTLEMENT_DATE", "SETTLEMENT_PERIOD", '
+            f'"EMBEDDED_WIND_FORECAST", "EMBEDDED_WIND_CAPACITY", '
+            f'"EMBEDDED_SOLAR_FORECAST", "EMBEDDED_SOLAR_CAPACITY" '
+            f'FROM "{NESO_DATASET}" '
+            f'WHERE "SETTLEMENT_DATE" >= \'{start_str}\' '
+            f'ORDER BY "SETTLEMENT_DATE", "SETTLEMENT_PERIOD" '
             f'LIMIT {page_size} OFFSET {offset}'
         )
         resp = requests.get(
@@ -223,18 +222,6 @@ def fetch_neso_bulk(start_date):
         time.sleep(DELAY)
 
     return all_records
-
-
-def _utc_to_settlement(dt_utc):
-    """Convert a UTC datetime to (settlement_date_str, settlement_period).
-
-    The NESO dataset DATETIME marks the *start* of each 30-minute slot in UTC.
-    We convert to UK local time (handles GMT/BST) to derive settlement date and
-    settlement period (1-based half-hour index within the UK calendar day).
-    """
-    uk = dt_utc.astimezone(UK_TZ)
-    sp = uk.hour * 2 + uk.minute // 30 + 1
-    return uk.date().isoformat(), sp
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
@@ -263,34 +250,32 @@ def save_interconnectors(db_path, d, sp_data):
 
 
 def save_embedded(db_path, records):
-    """Convert NESO f93d1835 records to settlement_date/period and insert into DB.
+    """Insert NESO d6375700 records into raw_embedded.
 
-    Each record has a UTC DATETIME string, WIND_EMB (MW) and SOLAR (MW).
-    Capacity fields use the fixed estimates defined at the top of this file.
+    Each record has SETTLEMENT_DATE (ISO timestamp), SETTLEMENT_PERIOD (int),
+    EMBEDDED_WIND_FORECAST, EMBEDDED_WIND_CAPACITY, EMBEDDED_SOLAR_FORECAST,
+    and EMBEDDED_SOLAR_CAPACITY — all taken directly from the dataset.
     """
     with sqlite3.connect(db_path) as con:
         for r in records:
-            raw_dt = r.get("DATETIME", "")
-            if not raw_dt:
-                continue
-            try:
-                dt_utc = datetime.fromisoformat(raw_dt.replace("Z", "+00:00"))
-                if dt_utc.tzinfo is None:
-                    # Dataset datetimes are UTC but stored without tz suffix
-                    dt_utc = dt_utc.replace(tzinfo=timezone.utc)
-            except ValueError:
+            raw_date = r.get("SETTLEMENT_DATE", "")
+            sp = r.get("SETTLEMENT_PERIOD")
+            if not raw_date or sp is None:
                 continue
 
-            date_str, sp = _utc_to_settlement(dt_utc)
+            # SETTLEMENT_DATE is an ISO timestamp; strip to date portion
+            date_str = raw_date[:10]
 
-            wind_mw  = float(r.get("WIND_EMB") or 0.0)
-            solar_mw = float(r.get("SOLAR")    or 0.0)
+            wind_mw       = float(r.get("EMBEDDED_WIND_FORECAST")  or 0.0)
+            wind_cap_mw   = float(r.get("EMBEDDED_WIND_CAPACITY")   or 1.0)
+            solar_mw      = float(r.get("EMBEDDED_SOLAR_FORECAST")  or 0.0)
+            solar_cap_mw  = float(r.get("EMBEDDED_SOLAR_CAPACITY")  or 1.0)
 
             con.execute(
                 "INSERT OR IGNORE INTO raw_embedded VALUES (?,?,?,?,?,?)",
-                (date_str, sp,
-                 wind_mw,  EMBEDDED_WIND_CAPACITY_MW,
-                 solar_mw, EMBEDDED_SOLAR_CAPACITY_MW),
+                (date_str, int(sp),
+                 wind_mw, wind_cap_mw,
+                 solar_mw, solar_cap_mw),
             )
 
 
