@@ -272,7 +272,7 @@ def save_embedded(db_path, records):
             solar_cap_mw  = float(r.get("EMBEDDED_SOLAR_CAPACITY")  or 1.0)
 
             con.execute(
-                "INSERT OR IGNORE INTO raw_embedded VALUES (?,?,?,?,?,?)",
+                "INSERT OR REPLACE INTO raw_embedded VALUES (?,?,?,?,?,?)",
                 (date_str, int(sp),
                  wind_mw, wind_cap_mw,
                  solar_mw, solar_cap_mw),

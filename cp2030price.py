@@ -583,14 +583,14 @@ def estimate_wholesale_price(
     ldes_discharge_avail_mw = min(
         CP2030_LDES_POWER_MW, ldes_soc_mwh * 2 * LDES_EFFICIENCY
     )
-    bat_charge_avail_mw = min(
+    bat_charge_avail_mw = max(0, min(
         CP2030_BATTERY_POWER_MW,
         (CP2030_BATTERY_ENERGY_MWH - battery_soc_mwh) / BATTERY_EFFICIENCY * 2,
-    )
-    ldes_charge_avail_mw = min(
+    ))
+    ldes_charge_avail_mw = max(0, min(
         CP2030_LDES_POWER_MW,
         (CP2030_LDES_ENERGY_MWH - ldes_soc_mwh) / LDES_EFFICIENCY * 2,
-    )
+    ))
 
     # ── IC parameters ─────────────────────────────────────────────────────────
     ic_params = {

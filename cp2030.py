@@ -203,16 +203,17 @@ def fetch_neso(date_str, sp):
     Fallback: most recent past record with the same settlement period (same time
     of day), in case the current SP hasn't been published yet.
 
-    NESO stores SETTLEMENT_DATE as an ISO timestamp (e.g. '2026-04-09T00:00:00').
-    We use the date portion with LIKE to avoid millisecond/timezone suffix mismatches.
+    NESO stores SETTLEMENT_DATE as a timestamp (e.g. '2026-04-09T00:00:00').
+    We use an exact timestamp match — LIKE doesn't work on timestamp columns in CKAN.
     We never use >= or ORDER BY date DESC because the dataset is a rolling ~14-day
     forecast — the most recent _id is always a future period, not the current one.
     """
-    date_only = date_str[:10]  # "YYYY-MM-DD", already in UK local time
+    # Format to match NESO's timestamp format exactly: "YYYY-MM-DDT00:00:00"
+    neso_date = date_str[:10] + "T00:00:00"
 
     records = _neso_query(
         f'SELECT * FROM "{NESO_DATASET}" '
-        f"WHERE \"SETTLEMENT_DATE\" LIKE '{date_only}%' AND \"SETTLEMENT_PERIOD\" = '{sp}' "
+        f"WHERE \"SETTLEMENT_DATE\" = '{neso_date}' AND \"SETTLEMENT_PERIOD\" = '{sp}' "
         f'ORDER BY "_id" DESC LIMIT 1'
     )
     if not records:
@@ -220,7 +221,7 @@ def fetch_neso(date_str, sp):
         # time of day (same SP number) so the diurnal pattern is preserved.
         records = _neso_query(
             f'SELECT * FROM "{NESO_DATASET}" '
-            f"WHERE \"SETTLEMENT_DATE\" < '{date_only}T00:00:00' AND \"SETTLEMENT_PERIOD\" = '{sp}' "
+            f"WHERE \"SETTLEMENT_DATE\" < '{neso_date}' AND \"SETTLEMENT_PERIOD\" = '{sp}' "
             f'ORDER BY "SETTLEMENT_DATE" DESC, "_id" DESC LIMIT 1'
         )
     if not records:
@@ -307,9 +308,9 @@ def cp2030_generation(elexon, neso):
     # total Elexon wind to isolate the offshore contribution.
     # Note: emb_wind_capacity varies by settlement period (it's a forecast availability
     # figure, not fixed installed capacity), so this split will fluctuate slightly.
-    trans_onshore_capacity = CURRENT_TOTAL_ONSHORE_WIND_CAPACITY_MW - emb_wind_capacity
+    trans_onshore_capacity = max(0, CURRENT_TOTAL_ONSHORE_WIND_CAPACITY_MW - emb_wind_capacity)
     trans_onshore_output = onshore_lf * trans_onshore_capacity
-    offshore_output = elexon.get("WIND", 0) - trans_onshore_output
+    offshore_output = max(0, elexon.get("WIND", 0) - trans_onshore_output)
 
     offshore_lf = (
         offshore_output / CURRENT_OFFSHORE_WIND_CAPACITY_MW
@@ -452,8 +453,14 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     hydro_dispatched = round(dispatch.get("hydro", 0))
     biomass_mw = round(dispatch.get("biomass", 0))
     gas_mw = round(dispatch.get("gas_ccgt", 0) + dispatch.get("gas_ocgt", 0))
-    battery_discharge_mw = round(dispatch.get("battery_discharge", 0))
-    ldes_discharge_mw = round(dispatch.get("ldes_discharge", 0))
+    # Keep exact values for SoC energy balance; round only for display/DB
+    battery_discharge_exact = dispatch.get("battery_discharge", 0)
+    ldes_discharge_exact = dispatch.get("ldes_discharge", 0)
+    battery_discharge_mw = round(battery_discharge_exact)
+    ldes_discharge_mw = round(ldes_discharge_exact)
+
+    battery_charge_exact = storage_flows["battery_charge_mw"]
+    ldes_charge_exact = storage_flows["ldes_charge_mw"]
 
     offshore_curtailed = round(max(0, gen["offshore_mw"] - offshore_dispatched))
     onshore_curtailed = round(max(0, gen["onshore_mw"] - onshore_dispatched))
@@ -478,16 +485,13 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     ic_flows_json = json.dumps(ic_by_country)
     ic_prices_json = json.dumps(ic_price_by_zone)
 
-    # ── Update storage SoC ────────────────────────────────────────────────────
-    battery_charge_mw = storage_flows["battery_charge_mw"]
-    ldes_charge_mw = storage_flows["ldes_charge_mw"]
-
-    battery_soc -= battery_discharge_mw * 0.5 / BATTERY_EFFICIENCY
-    battery_soc += battery_charge_mw * 0.5 * BATTERY_EFFICIENCY
+    # ── Update storage SoC (using exact values to avoid cumulative drift) ─────
+    battery_soc -= battery_discharge_exact * 0.5 / BATTERY_EFFICIENCY
+    battery_soc += battery_charge_exact * 0.5 * BATTERY_EFFICIENCY
     battery_soc = max(0.0, min(CP2030_BATTERY_ENERGY_MWH, battery_soc))
 
-    ldes_soc -= ldes_discharge_mw * 0.5 / LDES_EFFICIENCY
-    ldes_soc += ldes_charge_mw * 0.5 * LDES_EFFICIENCY
+    ldes_soc -= ldes_discharge_exact * 0.5 / LDES_EFFICIENCY
+    ldes_soc += ldes_charge_exact * 0.5 * LDES_EFFICIENCY
     ldes_soc = max(0.0, min(CP2030_LDES_ENERGY_MWH, ldes_soc))
 
     state["battery_soc_mwh"] = round(battery_soc)
@@ -509,9 +513,9 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
         "solar_curtailed_mw": solar_curtailed,
         "nuclear_curtailed_mw": nuclear_curtailed,
         "hydro_curtailed_mw": hydro_curtailed,
-        "battery_charge_mw": round(battery_charge_mw),
+        "battery_charge_mw": round(battery_charge_exact),
         "battery_discharge_mw": battery_discharge_mw,
-        "ldes_charge_mw": round(ldes_charge_mw),
+        "ldes_charge_mw": round(ldes_charge_exact),
         "ldes_discharge_mw": ldes_discharge_mw,
         "interconnector_mw": net_ic,
         "ic_flows_json": ic_flows_json,
