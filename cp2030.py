@@ -311,6 +311,9 @@ def cp2030_generation(elexon, neso):
     onshore_mw = onshore_lf * CP2030_ONSHORE_WIND_MW
     wind_mw = onshore_mw + offshore_mw
     # Solar: embedded only, scaled to CP2030 solar capacity
+    print(
+        f"NESO embedded solar: {neso['embedded_solar_mw']} MW, capacity: {neso['embedded_solar_capacity_mw']} MW"
+    )
     solar_lf = (
         neso["embedded_solar_mw"] / neso["embedded_solar_capacity_mw"]
         if neso["embedded_solar_capacity_mw"] > 0
