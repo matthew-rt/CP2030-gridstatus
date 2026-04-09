@@ -186,42 +186,48 @@ def fetch_interconnectors_day(d):
 # ── NESO embedded wind/solar ──────────────────────────────────────────────────
 
 
-def fetch_neso_bulk(start_date):
-    """Fetch all NESO embedded wind/solar records from start_date onwards.
+def _neso_query_with_retry(sql, retries=3, backoff=5):
+    """Run a NESO SQL query with retries and exponential backoff."""
+    for attempt in range(retries):
+        try:
+            resp = requests.get(
+                NESO_URL, params=parse.urlencode({"sql": sql}), timeout=120
+            )
+            resp.raise_for_status()
+            return resp.json()["result"]["records"]
+        except requests.exceptions.Timeout:
+            wait = backoff * (2 ** attempt)
+            print(f"    Timeout (attempt {attempt + 1}/{retries}) — retrying in {wait}s")
+            time.sleep(wait)
+        except requests.exceptions.HTTPError as e:
+            wait = backoff * (2 ** attempt)
+            print(f"    HTTP {e.response.status_code} (attempt {attempt + 1}/{retries}) — retrying in {wait}s")
+            time.sleep(wait)
+        except Exception as e:
+            wait = backoff * (2 ** attempt)
+            print(f"    Error: {e} (attempt {attempt + 1}/{retries}) — retrying in {wait}s")
+            time.sleep(wait)
+    raise RuntimeError(f"NESO query failed after {retries} attempts")
 
-    Uses dataset d6375700 which has SETTLEMENT_DATE, SETTLEMENT_PERIOD,
+
+def fetch_neso_day(d):
+    """Fetch NESO embedded wind/solar records for a single day.
+
+    Returns a list of dicts with SETTLEMENT_DATE, SETTLEMENT_PERIOD,
     EMBEDDED_WIND_FORECAST, EMBEDDED_WIND_CAPACITY, EMBEDDED_SOLAR_FORECAST,
-    and EMBEDDED_SOLAR_CAPACITY fields. Paginates automatically.
-
-    Returns a list of dicts with those keys.
+    and EMBEDDED_SOLAR_CAPACITY.
     """
-    start_str = f"{start_date.isoformat()}T00:00:00"
-    all_records = []
-    offset = 0
-    page_size = 5000
-
-    while True:
-        sql = (
-            f'SELECT "SETTLEMENT_DATE", "SETTLEMENT_PERIOD", '
-            f'"EMBEDDED_WIND_FORECAST", "EMBEDDED_WIND_CAPACITY", '
-            f'"EMBEDDED_SOLAR_FORECAST", "EMBEDDED_SOLAR_CAPACITY" '
-            f'FROM "{NESO_DATASET}" '
-            f'WHERE "SETTLEMENT_DATE" >= \'{start_str}\' '
-            f'ORDER BY "SETTLEMENT_DATE", "SETTLEMENT_PERIOD" '
-            f'LIMIT {page_size} OFFSET {offset}'
-        )
-        resp = requests.get(
-            NESO_URL, params=parse.urlencode({"sql": sql}), timeout=60
-        )
-        resp.raise_for_status()
-        page = resp.json()["result"]["records"]
-        all_records.extend(page)
-        if len(page) < page_size:
-            break
-        offset += page_size
-        time.sleep(DELAY)
-
-    return all_records
+    day_str = f"{d.isoformat()}T00:00:00"
+    sql = (
+        f'SELECT "SETTLEMENT_DATE", "SETTLEMENT_PERIOD", '
+        f'"EMBEDDED_WIND_FORECAST", "EMBEDDED_WIND_CAPACITY", '
+        f'"EMBEDDED_SOLAR_FORECAST", "EMBEDDED_SOLAR_CAPACITY" '
+        f'FROM "{NESO_DATASET}" '
+        f"WHERE \"SETTLEMENT_DATE\" = '{day_str}' "
+        f'ORDER BY "SETTLEMENT_PERIOD" '
+        f'LIMIT 100'
+    )
+    return _neso_query_with_retry(sql)
 
 
 # ── Persistence ───────────────────────────────────────────────────────────────
@@ -317,7 +323,6 @@ def main():
 
     # ── NESO embedded ────────────────────────────────────────────────────────
     have_emb = stored_embedded_dates(RAW_DB_FILE)
-    # Re-fetch if any needed date is missing
     emb_missing = [
         d for d in (START_DATE + timedelta(days=i)
                     for i in range((today - START_DATE).days + 1))
@@ -325,13 +330,29 @@ def main():
     ]
 
     if emb_missing:
-        print(f"\nFetching NESO embedded data ({len(emb_missing)} dates missing)...")
-        try:
-            neso_records = fetch_neso_bulk(START_DATE)
-            save_embedded(RAW_DB_FILE, neso_records)
-            print(f"  Stored {len(neso_records)} NESO records.")
-        except Exception as e:
-            print(f"  NESO fetch FAILED: {e}")
+        print(f"\nNESO embedded dates already stored: {len(have_emb)}")
+        print(f"NESO embedded dates to download:    {len(emb_missing)}")
+        failed_emb = []
+        for i, d in enumerate(emb_missing):
+            print(f"  [{i+1}/{len(emb_missing)}] NESO {d.isoformat()}...", end=" ", flush=True)
+            try:
+                records = fetch_neso_day(d)
+                if records:
+                    save_embedded(RAW_DB_FILE, records)
+                    print(f"OK ({len(records)} SPs)")
+                else:
+                    print("no data")
+                    failed_emb.append(d)
+            except Exception as e:
+                print(f"FAILED: {e}")
+                failed_emb.append(d)
+            time.sleep(DELAY)
+
+        if failed_emb:
+            print(f"\nWARNING: {len(failed_emb)} NESO dates failed:")
+            for d in failed_emb:
+                print(f"  {d.isoformat()}")
+            print("Re-run the script to retry these dates.")
     else:
         print("\nNESO embedded data: all dates present, skipping.")
 
