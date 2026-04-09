@@ -213,19 +213,20 @@ def _neso_query_with_retry(sql, retries=3, backoff=5):
 def fetch_neso_day(d):
     """Fetch NESO embedded wind/solar records for a single day.
 
-    Returns a list of dicts with SETTLEMENT_DATE, SETTLEMENT_PERIOD,
-    EMBEDDED_WIND_FORECAST, EMBEDDED_WIND_CAPACITY, EMBEDDED_SOLAR_FORECAST,
-    and EMBEDDED_SOLAR_CAPACITY.
+    NESO stores every forecast revision (~300 per SP per day). We use
+    DISTINCT ON to keep only the latest revision (highest _id) per SP.
+
+    Returns a list of up to 48 dicts (one per SP).
     """
     day_str = f"{d.isoformat()}T00:00:00"
     sql = (
-        f'SELECT "SETTLEMENT_DATE", "SETTLEMENT_PERIOD", '
+        f'SELECT DISTINCT ON ("SETTLEMENT_PERIOD") '
+        f'"SETTLEMENT_DATE", "SETTLEMENT_PERIOD", '
         f'"EMBEDDED_WIND_FORECAST", "EMBEDDED_WIND_CAPACITY", '
         f'"EMBEDDED_SOLAR_FORECAST", "EMBEDDED_SOLAR_CAPACITY" '
         f'FROM "{NESO_DATASET}" '
         f"WHERE \"SETTLEMENT_DATE\" = '{day_str}' "
-        f'ORDER BY "SETTLEMENT_PERIOD" '
-        f'LIMIT 100'
+        f'ORDER BY "SETTLEMENT_PERIOD", "_id" DESC'
     )
     return _neso_query_with_retry(sql)
 
