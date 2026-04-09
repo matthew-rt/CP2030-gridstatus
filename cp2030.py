@@ -316,6 +316,7 @@ def cp2030_generation(elexon, neso):
         if neso["embedded_solar_capacity_mw"] > 0
         else 0
     )
+    print(f"Solar load factor: {solar_lf}")
     solar_mw = solar_lf * CP2030_SOLAR_MW
 
     # Nuclear: same load factor, applied to CP2030 nuclear capacity
@@ -397,19 +398,24 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     if gas_p is not None:
         price_kwargs["gas_p"] = gas_p
 
-    wholesale_price, marginal_tech, ic_exports, storage_flows, dispatch, ic_foreign_prices = (
-        estimate_wholesale_price(
-            offshore_mw=gen["offshore_mw"],
-            onshore_mw=gen["onshore_mw"],
-            solar_mw=gen["solar_mw"],
-            nuclear_mw=gen["nuclear_mw"],
-            hydro_mw=gen["hydro_mw"],
-            demand_mw=demand_cp2030,
-            battery_soc_mwh=battery_soc,
-            ldes_soc_mwh=ldes_soc,
-            foreign_prices=load_entso_prices(ENTSO_PRICES_FILE, reference_dt=ts),
-            **price_kwargs,
-        )
+    (
+        wholesale_price,
+        marginal_tech,
+        ic_exports,
+        storage_flows,
+        dispatch,
+        ic_foreign_prices,
+    ) = estimate_wholesale_price(
+        offshore_mw=gen["offshore_mw"],
+        onshore_mw=gen["onshore_mw"],
+        solar_mw=gen["solar_mw"],
+        nuclear_mw=gen["nuclear_mw"],
+        hydro_mw=gen["hydro_mw"],
+        demand_mw=demand_cp2030,
+        battery_soc_mwh=battery_soc,
+        ldes_soc_mwh=ldes_soc,
+        foreign_prices=load_entso_prices(ENTSO_PRICES_FILE, reference_dt=ts),
+        **price_kwargs,
     )
 
     # ── Per-technology dispatch and curtailment ───────────────────────────────
