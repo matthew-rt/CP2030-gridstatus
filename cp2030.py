@@ -212,7 +212,7 @@ def fetch_neso(date_str, sp):
     # 1. Exact match for today's date and period
     records = _neso_query(
         f'SELECT * FROM "{NESO_DATASET}" '
-        f"WHERE \"SETTLEMENT_DATE\" = '{neso_date}' AND \"SETTLEMENT_PERIOD\" = {sp} "
+        f'WHERE "SETTLEMENT_DATE" = \'{neso_date}\' AND "SETTLEMENT_PERIOD" = {sp} '
         f'ORDER BY "_id" DESC LIMIT 1'
     )
     if records and records[0]["SETTLEMENT_PERIOD"] == sp:
@@ -221,7 +221,7 @@ def fetch_neso(date_str, sp):
         # 2. Dataset is delayed — get the closest available SP from today
         records = _neso_query(
             f'SELECT * FROM "{NESO_DATASET}" '
-            f"WHERE \"SETTLEMENT_DATE\" = '{neso_date}' AND \"SETTLEMENT_PERIOD\" <= {sp} "
+            f'WHERE "SETTLEMENT_DATE" = \'{neso_date}\' AND "SETTLEMENT_PERIOD" <= {sp} '
             f'ORDER BY "SETTLEMENT_PERIOD" DESC LIMIT 1'
         )
         if records:
@@ -235,13 +235,15 @@ def fetch_neso(date_str, sp):
             # 3. No data for today at all — use same SP from yesterday
             records = _neso_query(
                 f'SELECT * FROM "{NESO_DATASET}" '
-                f"WHERE \"SETTLEMENT_DATE\" < '{neso_date}' AND \"SETTLEMENT_PERIOD\" = {sp} "
+                f'WHERE "SETTLEMENT_DATE" < \'{neso_date}\' AND "SETTLEMENT_PERIOD" = {sp} '
                 f'ORDER BY "SETTLEMENT_DATE" DESC LIMIT 1'
             )
             if not records:
                 raise RuntimeError("No NESO embedded generation data available")
             r = records[0]
-            print(f"NESO: no data for today, falling back to {r['SETTLEMENT_DATE'][:10]} SP {sp}")
+            print(
+                f"NESO: no data for today, falling back to {r['SETTLEMENT_DATE'][:10]} SP {sp}"
+            )
 
     return {
         "embedded_wind_mw": r["EMBEDDED_WIND_FORECAST"],
@@ -323,7 +325,9 @@ def cp2030_generation(elexon, neso):
     # total Elexon wind to isolate the offshore contribution.
     # Note: emb_wind_capacity varies by settlement period (it's a forecast availability
     # figure, not fixed installed capacity), so this split will fluctuate slightly.
-    trans_onshore_capacity = max(0, CURRENT_TOTAL_ONSHORE_WIND_CAPACITY_MW - emb_wind_capacity)
+    trans_onshore_capacity = max(
+        0, CURRENT_TOTAL_ONSHORE_WIND_CAPACITY_MW - emb_wind_capacity
+    )
     trans_onshore_output = onshore_lf * trans_onshore_capacity
     offshore_output = max(0, elexon.get("WIND", 0) - trans_onshore_output)
 
@@ -344,15 +348,12 @@ def cp2030_generation(elexon, neso):
     onshore_mw = onshore_lf * CP2030_ONSHORE_WIND_MW
     wind_mw = onshore_mw + offshore_mw
     # Solar: embedded only, scaled to CP2030 solar capacity
-    print(
-        f"NESO embedded solar: {neso['embedded_solar_mw']} MW, capacity: {neso['embedded_solar_capacity_mw']} MW"
-    )
+
     solar_lf = (
         neso["embedded_solar_mw"] / neso["embedded_solar_capacity_mw"]
         if neso["embedded_solar_capacity_mw"] > 0
         else 0
     )
-    print(f"Solar load factor: {solar_lf}")
     solar_mw = solar_lf * CP2030_SOLAR_MW
 
     # Nuclear: same load factor, applied to CP2030 nuclear capacity
