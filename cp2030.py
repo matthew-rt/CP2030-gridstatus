@@ -210,6 +210,7 @@ def fetch_neso(date_str, sp):
         raise RuntimeError("No NESO embedded generation data available")
 
     r = records[0]
+    print(r)
     return {
         "embedded_wind_mw": r["EMBEDDED_WIND_FORECAST"],
         "embedded_wind_capacity_mw": r["EMBEDDED_WIND_CAPACITY"],
