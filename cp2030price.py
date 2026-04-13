@@ -263,70 +263,104 @@ def fetch_entso_prices(api_key=None, eur_to_gbp=EUR_TO_GBP, retries=5, backoff=1
     return result
 
 
-def load_entso_prices(prices_file, reference_dt=None):
+def _parse_entso_cache(prices_file):
+    """Load and pre-parse the ENTSO-E JSON cache into sorted (timestamp, price) lists.
+    Returns {area_key: [(datetime, price), ...]} sorted by datetime, or None on failure.
     """
-    Load cached ENTSO-E prices and return {ic_name: price_gbp} for the
-    given time. Prefers the same hour today; falls back to the same hour
-    yesterday before resorting to nearest-timestamp in the cache.
-
-    reference_dt: datetime to look up prices for (UTC). Defaults to now.
-                  Pass the historical settlement period timestamp for reruns.
-
-    Falls back to the hardcoded INTERCONNECTORS defaults for any area where
-    the cache is missing or stale.
-    """
-    defaults = {name: fp for name, _, fp, _ in INTERCONNECTORS}
-
     try:
         with open(prices_file) as f:
             cache = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
+        return None
+
+    parsed = {}
+    for area_key, area_data in cache.items():
+        entries = []
+        for ts_str, price in area_data.items():
+            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
+            entries.append((ts, price))
+        entries.sort()
+        parsed[area_key] = entries
+    return parsed
+
+
+# Module-level cache: (file_path, file_mtime) -> parsed data
+_entso_cache = (None, None, None)
+
+
+def load_entso_prices(prices_file, reference_dt=None):
+    """
+    Load cached ENTSO-E prices and return ({ic_name: price_gbp}, max_age_hours).
+
+    Uses bisect for fast lookup into sorted timestamp lists. The file is
+    parsed once and reused while its mtime is unchanged.
+
+    reference_dt: datetime to look up prices for (UTC). Defaults to now.
+                  Pass the historical settlement period timestamp for reruns.
+    """
+    import bisect
+
+    global _entso_cache
+    defaults = {name: fp for name, _, fp, _ in INTERCONNECTORS}
+
+    # Re-parse only when the file changes
+    try:
+        mtime = os.path.getmtime(prices_file)
+    except OSError:
+        return defaults, float("inf")
+
+    cache_path, cache_mtime, parsed = _entso_cache
+    if cache_path != prices_file or cache_mtime != mtime:
+        parsed = _parse_entso_cache(prices_file)
+        _entso_cache = (prices_file, mtime, parsed)
+
+    if parsed is None:
         return defaults, float("inf")
 
     ref = reference_dt if reference_dt is not None else datetime.now(timezone.utc)
-    HOUR = 3600
+    HALF_HOUR = 1800
 
-    def _lookup_price(area_data):
-        """Prefer the price for the same hour today; fall back to the same hour
-        yesterday before resorting to nearest-timestamp.
-        Returns (price, distance_seconds) where distance_seconds is 0 for exact
-        matches, or the gap to the nearest timestamp used.
+    def _lookup_price(entries):
+        """Bisect into sorted entries to find the nearest price.
+        Returns (price, distance_seconds).
         """
+        if not entries:
+            return None, float("inf")
 
-        def _within_30min(target):
-            for ts_str, price in area_data.items():
-                ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-                if abs((target - ts).total_seconds()) <= 0.5 * HOUR:
-                    return price
-            return None
+        timestamps = [e[0] for e in entries]  # already sorted
+        idx = bisect.bisect_left(timestamps, ref)
 
-        price = _within_30min(ref)
-        if price is not None:
-            return price, 0
-
-        price = _within_30min(ref - timedelta(hours=24))
-        if price is not None:
-            return price, 24 * HOUR
-
-        # Last resort: nearest timestamp in the cache
+        # Check the two candidates bracketing ref
         best_price, best_diff = None, float("inf")
-        for ts_str, price in area_data.items():
-            ts = datetime.fromisoformat(ts_str.replace("Z", "+00:00"))
-            diff = abs((ref - ts).total_seconds())
-            if diff < best_diff:
-                best_diff, best_price = diff, price
-        return best_price, best_diff
+        for i in (idx - 1, idx):
+            if 0 <= i < len(entries):
+                diff = abs((ref - entries[i][0]).total_seconds())
+                if diff < best_diff:
+                    best_diff = diff
+                    best_price = entries[i][1]
+
+        # Classify: within 30min = exact, within 24.5h = yesterday fallback
+        if best_diff <= HALF_HOUR:
+            return best_price, 0
+        elif best_diff <= 24.5 * 3600:
+            return best_price, 24 * 3600
+        else:
+            return best_price, best_diff
 
     prices = {}
     max_age_s = 0
     for name, _, default_fp, _ in INTERCONNECTORS:
-        if IC_AREA.get(name) in cache:
-            price, age_s = _lookup_price(cache[IC_AREA[name]])
-            prices[name] = price
+        if IC_AREA.get(name) in parsed:
+            price, age_s = _lookup_price(parsed[IC_AREA[name]])
+            if price is not None:
+                prices[name] = price
+            else:
+                prices[name] = default_fp
+                age_s = float("inf")
             max_age_s = max(max_age_s, age_s)
         else:
             prices[name] = default_fp
-            max_age_s = float("inf")  # no data at all
+            max_age_s = float("inf")
 
     return prices, max_age_s / 3600  # (dict, max_age_hours)
 
