@@ -218,31 +218,47 @@ def _fetch_area_prices_eur(area_code, api_key):
     return prices  # {utc_iso: price_eur}
 
 
-def fetch_entso_prices(api_key=None, eur_to_gbp=EUR_TO_GBP):
+def fetch_entso_prices(api_key=None, eur_to_gbp=EUR_TO_GBP, retries=5, backoff=10):
     """
     Fetch all day-ahead prices from ENTSO-E for every bidding zone.
     Converts EUR/MWh → GBP/MWh using eur_to_gbp (pass the live rate from
     fetch_eur_to_gbp() when calling from nightly_refresh).
 
+    Each area is retried up to `retries` times with exponential backoff.
     Returns {area_key: {utc_iso: price_gbp}} for writing to the nightly cache.
-    Areas that fail are omitted; load_entso_prices() falls back to defaults.
+    Areas that fail all retries are omitted; load_entso_prices() falls back to defaults.
     If api_key is None or empty, returns an empty dict.
     """
     if not api_key:
         return {}
 
+    import time as _time
+
     result = {}
     for area_key, area_code in ENTSO_E_AREAS.items():
-        try:
-            prices_eur = _fetch_area_prices_eur(area_code, api_key)
-            if prices_eur:
-                result[area_key] = {
-                    ts: round(p * eur_to_gbp, 2) for ts, p in prices_eur.items()
-                }
-            else:
-                print(f"ENTSO-E: no data for {area_key} ({area_code})")
-        except Exception as e:
-            print(f"ENTSO-E fetch failed for {area_key}: {e}")
+        for attempt in range(retries):
+            try:
+                prices_eur = _fetch_area_prices_eur(area_code, api_key)
+                if prices_eur:
+                    result[area_key] = {
+                        ts: round(p * eur_to_gbp, 2) for ts, p in prices_eur.items()
+                    }
+                else:
+                    print(f"ENTSO-E: no data for {area_key} ({area_code})")
+                break  # success or empty — move to next area
+            except Exception as e:
+                wait = backoff * (2 ** attempt)
+                if attempt < retries - 1:
+                    print(
+                        f"ENTSO-E fetch failed for {area_key} "
+                        f"(attempt {attempt + 1}/{retries}): {e} — retrying in {wait}s"
+                    )
+                    _time.sleep(wait)
+                else:
+                    print(
+                        f"ENTSO-E fetch failed for {area_key} "
+                        f"after {retries} attempts: {e} — skipping"
+                    )
 
     return result
 

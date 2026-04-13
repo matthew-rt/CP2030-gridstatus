@@ -12,7 +12,7 @@ import sqlite3
 import sys
 import time
 import requests
-from datetime import datetime, timedelta, timezone
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from urllib import parse
 from zoneinfo import ZoneInfo
@@ -430,10 +430,46 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     )
 
     # ── Price-based dispatch ──────────────────────────────────────────────────
+    data_warnings = []
+
     price_kwargs = {}
     gas_p = load_gas_price(reference_date=ts.date())
     if gas_p is not None:
         price_kwargs["gas_p"] = gas_p
+        # Check staleness: warn if the gas price entry is >48h old
+        try:
+            with open(GAS_PRICE_FILE) as f:
+                gas_data = json.load(f)
+            if isinstance(gas_data, dict) and not (set(gas_data.keys()) == {"p_per_therm"}):
+                latest_gas_date = max(gas_data.keys())
+                gas_age_days = (ts.date() - date.fromisoformat(latest_gas_date)).days
+                if gas_age_days > 2:
+                    data_warnings.append(f"gas_price:stale_{gas_age_days}d")
+                    print(f"WARNING: gas price is {gas_age_days} days old (last: {latest_gas_date})")
+        except Exception:
+            pass
+    else:
+        data_warnings.append("gas_price:default")
+        print(f"WARNING: no gas price data — using hardcoded default")
+
+    foreign_prices = load_entso_prices(ENTSO_PRICES_FILE, reference_dt=ts)
+    # Check if ENTSO-E prices are defaults (cache missing or stale)
+    entso_defaults = {name: fp for name, _, fp, _ in INTERCONNECTORS}
+    if foreign_prices == entso_defaults:
+        data_warnings.append("entso:default")
+        print(f"WARNING: ENTSO-E prices unavailable — using hardcoded defaults")
+    else:
+        # Check staleness: warn if the cache file is >26h old (should refresh nightly)
+        try:
+            entso_mtime = datetime.fromtimestamp(
+                os.path.getmtime(ENTSO_PRICES_FILE), tz=timezone.utc
+            )
+            entso_age_h = (ts - entso_mtime).total_seconds() / 3600
+            if entso_age_h > 26:
+                data_warnings.append(f"entso:stale_{int(entso_age_h)}h")
+                print(f"WARNING: ENTSO-E cache is {int(entso_age_h)}h old — nightly refresh may be failing")
+        except Exception:
+            pass
 
     (
         wholesale_price,
@@ -451,7 +487,7 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
         demand_mw=demand_cp2030,
         battery_soc_mwh=battery_soc,
         ldes_soc_mwh=ldes_soc,
-        foreign_prices=load_entso_prices(ENTSO_PRICES_FILE, reference_dt=ts),
+        foreign_prices=foreign_prices,
         **price_kwargs,
     )
 
@@ -540,6 +576,7 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
         "ldes_soc_mwh": round(ldes_soc),
         "wholesale_price_gbp": wholesale_price,
         "marginal_tech": marginal_tech,
+        "data_warnings": data_warnings,
     }
 
     history = state.get("history", [])
@@ -584,10 +621,16 @@ def init_db(db_path):
                 battery_soc_mwh        INTEGER,
                 ldes_soc_mwh           INTEGER,
                 wholesale_price_gbp    REAL,
-                marginal_tech          TEXT
+                marginal_tech          TEXT,
+                data_warnings          TEXT
             )
         """
         )
+        # Migrate: add data_warnings column to existing history tables
+        try:
+            con.execute("ALTER TABLE history ADD COLUMN data_warnings TEXT")
+        except sqlite3.OperationalError:
+            pass  # column already exists
         con.execute(
             """
             CREATE TABLE IF NOT EXISTS records (
@@ -611,6 +654,10 @@ def log_entry(db_path, entry, overwrite=False):
     overwrite=False silently skips duplicates (cron use).
     """
     verb = "INSERT OR REPLACE" if overwrite else "INSERT OR IGNORE"
+    # Serialize data_warnings list to comma-separated string for DB storage
+    db_entry = dict(entry)
+    warnings = db_entry.get("data_warnings")
+    db_entry["data_warnings"] = ",".join(warnings) if warnings else None
     with sqlite3.connect(db_path) as con:
         con.execute(
             f"""
@@ -625,10 +672,11 @@ def log_entry(db_path, entry, overwrite=False):
                 :ldes_charge_mw, :ldes_discharge_mw,
                 :interconnector_mw, :ic_flows_json,
                 :battery_soc_mwh, :ldes_soc_mwh,
-                :wholesale_price_gbp, :marginal_tech
+                :wholesale_price_gbp, :marginal_tech,
+                :data_warnings
             )
         """,
-            entry,
+            db_entry,
         )
 
 

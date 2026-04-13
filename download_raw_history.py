@@ -362,7 +362,8 @@ def main():
         for d in failed_gen:
             print(f"  {d.isoformat()}")
         print("Re-run the script to retry these dates.")
-    else:
+
+    if not failed_gen:
         print("\nAll dates downloaded successfully.")
 
 
