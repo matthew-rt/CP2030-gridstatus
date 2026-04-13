@@ -281,14 +281,17 @@ def load_entso_prices(prices_file, reference_dt=None):
         with open(prices_file) as f:
             cache = json.load(f)
     except (FileNotFoundError, json.JSONDecodeError):
-        return defaults
+        return defaults, float("inf")
 
     ref = reference_dt if reference_dt is not None else datetime.now(timezone.utc)
     HOUR = 3600
 
     def _lookup_price(area_data):
         """Prefer the price for the same hour today; fall back to the same hour
-        yesterday before resorting to nearest-timestamp."""
+        yesterday before resorting to nearest-timestamp.
+        Returns (price, distance_seconds) where distance_seconds is 0 for exact
+        matches, or the gap to the nearest timestamp used.
+        """
 
         def _within_30min(target):
             for ts_str, price in area_data.items():
@@ -299,11 +302,11 @@ def load_entso_prices(prices_file, reference_dt=None):
 
         price = _within_30min(ref)
         if price is not None:
-            return price
+            return price, 0
 
         price = _within_30min(ref - timedelta(hours=24))
         if price is not None:
-            return price
+            return price, 24 * HOUR
 
         # Last resort: nearest timestamp in the cache
         best_price, best_diff = None, float("inf")
@@ -312,16 +315,20 @@ def load_entso_prices(prices_file, reference_dt=None):
             diff = abs((ref - ts).total_seconds())
             if diff < best_diff:
                 best_diff, best_price = diff, price
-        return best_price
+        return best_price, best_diff
 
-    return {
-        name: (
-            _lookup_price(cache[IC_AREA[name]])
-            if IC_AREA.get(name) in cache
-            else default_fp
-        )
-        for name, _, default_fp, _ in INTERCONNECTORS
-    }
+    prices = {}
+    max_age_s = 0
+    for name, _, default_fp, _ in INTERCONNECTORS:
+        if IC_AREA.get(name) in cache:
+            price, age_s = _lookup_price(cache[IC_AREA[name]])
+            prices[name] = price
+            max_age_s = max(max_age_s, age_s)
+        else:
+            prices[name] = default_fp
+            max_age_s = float("inf")  # no data at all
+
+    return prices, max_age_s / 3600  # (dict, max_age_hours)
 
 
 # ── Gas Price Fetching ────────────────────────────────────────────────────────

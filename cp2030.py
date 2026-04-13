@@ -452,24 +452,15 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
         data_warnings.append("gas_price:default")
         print(f"WARNING: no gas price data — using hardcoded default")
 
-    foreign_prices = load_entso_prices(ENTSO_PRICES_FILE, reference_dt=ts)
+    foreign_prices, entso_age_h = load_entso_prices(ENTSO_PRICES_FILE, reference_dt=ts)
     # Check if ENTSO-E prices are defaults (cache missing or stale)
     entso_defaults = {name: fp for name, _, fp, _ in INTERCONNECTORS}
     if foreign_prices == entso_defaults:
         data_warnings.append("entso:default")
         print(f"WARNING: ENTSO-E prices unavailable — using hardcoded defaults")
-    else:
-        # Check staleness: warn if the cache file is >26h old (should refresh nightly)
-        try:
-            entso_mtime = datetime.fromtimestamp(
-                os.path.getmtime(ENTSO_PRICES_FILE), tz=timezone.utc
-            )
-            entso_age_h = (ts - entso_mtime).total_seconds() / 3600
-            if entso_age_h > 26:
-                data_warnings.append(f"entso:stale_{int(entso_age_h)}h")
-                print(f"WARNING: ENTSO-E cache is {int(entso_age_h)}h old — nightly refresh may be failing")
-        except Exception:
-            pass
+    elif entso_age_h > 26:
+        data_warnings.append(f"entso:stale_{int(entso_age_h)}h")
+        print(f"WARNING: ENTSO-E prices are {int(entso_age_h)}h from reference time")
 
     (
         wholesale_price,
