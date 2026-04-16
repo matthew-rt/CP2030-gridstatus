@@ -1,28 +1,23 @@
 #!/usr/bin/env python3
 """
-CP2030 Wholesale Price Model — standalone tester
+CP2030 Wholesale Price Model
 
 Estimates GB wholesale electricity clearing price under CP2030 capacity
-assumptions using a merit order simulation with smoothed bid distributions.
+assumptions using a two-sided merit order simulation with smoothed bid
+distributions.
 
 Each domestic technology is divided into N_BANDS equal-capacity bands with
 prices drawn from evenly-spaced quantiles of N(mean, sigma) — deterministic
 and smooth.
 
-Storage discharge sits in the static merit order (capped by available SoC)
-so it participates fully in price formation and can influence IC directions.
-Interconnector directions and price are resolved iteratively. After convergence,
-storage charging is computed analytically: the maximum MW that can charge
-without pushing the clearing price above the storage max charge price.
+Storage discharge and IC imports sit in the supply stack (ascending by bid
+price). IC exports and storage charging are resolved analytically as demand
+that absorbs surplus below their respective price thresholds — no iteration
+needed since import bids always sit above export thresholds.
 
 Foreign electricity prices are fetched from the ENTSO-E Transparency Platform
 (day-ahead A44 prices). Set ENTSO_E_API_KEY env var to enable; falls back to
 hardcoded defaults if the key is absent or a fetch fails.
-
-Integration note:
-    cp2030.py currently returns combined wind_mw. When integrating, split
-    cp2030_generation() to also return onshore_mw and offshore_mw separately,
-    then call estimate_wholesale_price() from run_model().
 
 Usage:
     python cp2030price.py                              # default foreign prices
@@ -565,13 +560,14 @@ def _find_clearing(bands, demand_mw):
         cumulative += dispatched
         last_price, last_label = price, label
         if cumulative >= demand_mw - _TOL:
-            return round(price, 2), label, dispatch
+            return round(price, 2), label, dispatch, 0.0
     # Loop exited via tolerance break — demand was met, float residual only
     if demand_mw - cumulative <= _TOL and last_label != "none":
-        return round(last_price, 2), last_label, dispatch
+        return round(last_price, 2), last_label, dispatch, 0.0
     total = sum(b[0] for b in bands)
+    unserved_mw = max(0.0, demand_mw - cumulative)
     print(f"WARNING: demand {demand_mw:,.0f} MW exceeds total supply {total:,.0f} MW")
-    return round(bands[-1][1], 2) if bands else 0.0, "unserved", dispatch
+    return round(bands[-1][1], 2) if bands else 0.0, "unserved", dispatch, unserved_mw
 
 
 # ── Price Estimation ──────────────────────────────────────────────────────────
@@ -624,6 +620,8 @@ def estimate_wholesale_price(
         ic_exports:     Dict of {ic_name: export_mw} for ICs that exported
         storage_flows:  Dict with battery/ldes charge and discharge MW
         dispatch:       Dict of {label: mw_dispatched} for all dispatched bands
+        ic_foreign_prices: Dict of {ic_name: foreign_price_gbp} actually used
+        unserved_mw:    Capacity shortfall MW (0.0 if demand was fully met)
     """
     # ── Storage bids: SRMC-based, derived from max charge price ─────────────
     # Discharge bid = max_charge_price / efficiency² (break-even given round-trip losses).
@@ -711,7 +709,7 @@ def estimate_wholesale_price(
             break  # headroom exhausted; no room for lower-priced bids
 
     # ── Final clearing pass ───────────────────────────────────────────────────
-    price, marginal, dispatch = _find_clearing(supply_bands, effective_demand)
+    price, marginal, dispatch, unserved_mw = _find_clearing(supply_bands, effective_demand)
 
     # ── Extract accepted flexible demand ──────────────────────────────────────
     battery_charge_mw = accepted.get("battery_charge", 0.0)
@@ -732,7 +730,7 @@ def estimate_wholesale_price(
     # Per-link foreign prices actually used in dispatch (GBP, after EUR conversion)
     ic_foreign_prices = {name: round(fp, 2) for name, (_, fp, _) in ic_params.items()}
 
-    return price, marginal, ic_exports, storage_flows, dispatch, ic_foreign_prices
+    return price, marginal, ic_exports, storage_flows, dispatch, ic_foreign_prices, round(unserved_mw, 2)
 
 
 # ── Scenario Tests ────────────────────────────────────────────────────────────
@@ -879,7 +877,7 @@ if __name__ == "__main__":
     ]
 
     for s in scenarios:
-        price, marginal, ic_exports, storage, dispatch, _ic_fp = estimate_wholesale_price(
+        price, marginal, ic_exports, storage, dispatch, _ic_fp, _unserved = estimate_wholesale_price(
             s["offshore_mw"],
             s["onshore_mw"],
             s["solar_mw"],

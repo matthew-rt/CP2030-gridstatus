@@ -412,7 +412,7 @@ def load_gas_price(reference_date=None):
     return data[min(data.keys())]
 
 
-def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None):
+def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None, carbon=None):
     """Run one settlement period of the CP2030 model. Mutates and returns state."""
     demand_actual = actual_demand(elexon, neso, ic_records)
     demand_cp2030 = demand_actual + DEMAND_UPLIFT_MW
@@ -469,6 +469,7 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
         storage_flows,
         dispatch,
         ic_foreign_prices,
+        unserved_mw,
     ) = estimate_wholesale_price(
         offshore_mw=gen["offshore_mw"],
         onshore_mw=gen["onshore_mw"],
@@ -480,6 +481,7 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
         ldes_soc_mwh=ldes_soc,
         foreign_prices=foreign_prices,
         **price_kwargs,
+        **({"carbon": carbon} if carbon is not None else {}),
     )
 
     # ── Per-technology dispatch and curtailment ───────────────────────────────
@@ -567,6 +569,7 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
         "ldes_soc_mwh": round(ldes_soc),
         "wholesale_price_gbp": wholesale_price,
         "marginal_tech": marginal_tech,
+        "unserved_mw": unserved_mw,
         "data_warnings": data_warnings,
     }
 
