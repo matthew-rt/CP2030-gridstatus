@@ -206,9 +206,17 @@ def _fetch_area_prices_eur(area_code, api_key):
                     )
 
     if not prices:
-        print(
-            f"ENTSO-E: no prices parsed from response for {area_code}. First 500 chars: {resp.text[:500]}"
-        )
+        # Extract Reason code/text from Acknowledgement_MarketDocument if present
+        reason_bits = []
+        for reason in root.findall(f"{pf}Reason", ns):
+            code = reason.find(f"{pf}code", ns)
+            text = reason.find(f"{pf}text", ns)
+            reason_bits.append(
+                f"code={code.text if code is not None else '?'} "
+                f"text={text.text if text is not None else '?'}"
+            )
+        reason_str = " | ".join(reason_bits) if reason_bits else "(no Reason element)"
+        print(f"ENTSO-E: no prices for {area_code} — {reason_str}")
 
     return prices  # {utc_iso: price_eur}
 
@@ -285,7 +293,11 @@ _entso_cache = (None, None, None)
 
 def load_entso_prices(prices_file, reference_dt=None):
     """
-    Load cached ENTSO-E prices and return ({ic_name: price_gbp}, max_age_hours).
+    Load cached ENTSO-E prices and return ({ic_name: price_gbp}, {zone: age_hours}).
+
+    The age dict is keyed by zone code (IC_AREA value, e.g. "FR", "IE") and
+    contains the age in hours of the nearest available price for that zone
+    relative to reference_dt. Zones with no data present float('inf').
 
     Uses bisect for fast lookup into sorted timestamp lists. The file is
     parsed once and reused while its mtime is unchanged.
@@ -297,12 +309,13 @@ def load_entso_prices(prices_file, reference_dt=None):
 
     global _entso_cache
     defaults = {name: fp for name, _, fp, _ in INTERCONNECTORS}
+    all_zones = {IC_AREA.get(name, name) for name, *_ in INTERCONNECTORS}
 
     # Re-parse only when the file changes
     try:
         mtime = os.path.getmtime(prices_file)
     except OSError:
-        return defaults, float("inf")
+        return defaults, {z: float("inf") for z in all_zones}
 
     cache_path, cache_mtime, parsed = _entso_cache
     if cache_path != prices_file or cache_mtime != mtime:
@@ -310,7 +323,7 @@ def load_entso_prices(prices_file, reference_dt=None):
         _entso_cache = (prices_file, mtime, parsed)
 
     if parsed is None:
-        return defaults, float("inf")
+        return defaults, {z: float("inf") for z in all_zones}
 
     ref = reference_dt if reference_dt is not None else datetime.now(timezone.utc)
     HALF_HOUR = 1800
@@ -343,21 +356,24 @@ def load_entso_prices(prices_file, reference_dt=None):
             return best_price, best_diff
 
     prices = {}
-    max_age_s = 0
+    zone_age_s = {}
     for name, _, default_fp, _ in INTERCONNECTORS:
-        if IC_AREA.get(name) in parsed:
-            price, age_s = _lookup_price(parsed[IC_AREA[name]])
+        zone = IC_AREA.get(name, name)
+        if zone in parsed:
+            price, age_s = _lookup_price(parsed[zone])
             if price is not None:
                 prices[name] = price
             else:
                 prices[name] = default_fp
                 age_s = float("inf")
-            max_age_s = max(max_age_s, age_s)
         else:
             prices[name] = default_fp
-            max_age_s = float("inf")
+            age_s = float("inf")
+        # Same zone may be referenced by multiple ICs — keep worst (highest age)
+        zone_age_s[zone] = max(zone_age_s.get(zone, 0), age_s)
 
-    return prices, max_age_s / 3600  # (dict, max_age_hours)
+    zone_age_h = {z: a / 3600 for z, a in zone_age_s.items()}
+    return prices, zone_age_h
 
 
 # ── Gas Price Fetching ────────────────────────────────────────────────────────
