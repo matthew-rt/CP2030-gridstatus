@@ -453,23 +453,27 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
         data_warnings.append("gas_price:default")
         print(f"WARNING: no gas price data — using hardcoded default")
 
-    foreign_prices, entso_age_h = load_entso_prices(ENTSO_PRICES_FILE, reference_dt=ts)
+    foreign_prices, zone_age_h = load_entso_prices(ENTSO_PRICES_FILE, reference_dt=ts)
     # Check if ENTSO-E prices are defaults (cache missing or stale)
     entso_defaults = {name: fp for name, _, fp, _ in INTERCONNECTORS}
     if foreign_prices == entso_defaults:
         data_warnings.append("entso:default")
         print(f"WARNING: ENTSO-E prices unavailable — using hardcoded defaults")
-    elif not math.isfinite(entso_age_h):
-        # At least one zone fell back to its default (missing from cache)
-        missing_zones = [
-            IC_AREA.get(n, n) for n, _, fp, _ in INTERCONNECTORS
-            if foreign_prices.get(n) == fp
-        ]
-        data_warnings.append("entso:partial_defaults")
-        print(f"WARNING: ENTSO-E prices missing for zones: {sorted(set(missing_zones))} — using defaults")
-    elif entso_age_h > 26:
-        data_warnings.append(f"entso:stale_{int(entso_age_h)}h")
-        print(f"WARNING: ENTSO-E prices are {int(entso_age_h)}h from reference time")
+    else:
+        missing_zones = sorted(z for z, a in zone_age_h.items() if not math.isfinite(a))
+        stale_zones = sorted(
+            (z, int(a)) for z, a in zone_age_h.items()
+            if math.isfinite(a) and a > 26
+        )
+        if missing_zones:
+            data_warnings.append(f"entso:missing_{'_'.join(missing_zones)}")
+            print(f"WARNING: ENTSO-E prices missing for zones: {missing_zones} — using defaults")
+        if stale_zones:
+            stale_str = ", ".join(f"{z}:{h}h" for z, h in stale_zones)
+            data_warnings.append(
+                "entso:stale_" + "_".join(f"{z}{h}h" for z, h in stale_zones)
+            )
+            print(f"WARNING: ENTSO-E prices stale for zones: {stale_str}")
 
     (
         wholesale_price,
