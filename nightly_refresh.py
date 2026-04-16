@@ -43,11 +43,34 @@ try:
     prices = fetch_entso_prices(api_key, eur_to_gbp=eur_to_gbp)
 
     if prices:
+        # Merge fresh 3-day window into existing cache so historical data
+        # accumulates instead of being overwritten each night.
+        existing = {}
+        if os.path.exists(ENTSO_PRICES_FILE):
+            try:
+                with open(ENTSO_PRICES_FILE) as f:
+                    existing = json.load(f)
+            except Exception as e:
+                print(f"WARNING: could not read existing cache ({e}) — starting fresh")
+                existing = {}
+
+        added = 0
+        for area_key, area_prices in prices.items():
+            if area_key not in existing:
+                existing[area_key] = {}
+            before = len(existing[area_key])
+            existing[area_key].update(area_prices)
+            added += len(existing[area_key]) - before
+
         tmp = ENTSO_PRICES_FILE + ".tmp"
         with open(tmp, "w") as f:
-            json.dump(prices, f)
+            json.dump(existing, f)
         os.replace(tmp, ENTSO_PRICES_FILE)
-        print(f"Cached ENTSO-E prices (live) to {ENTSO_PRICES_FILE}")
+        total = sum(len(v) for v in existing.values())
+        print(
+            f"Merged ENTSO-E prices into {ENTSO_PRICES_FILE} "
+            f"(+{added} new points, {total} total across {len(existing)} zones)"
+        )
     elif api_key:
         print(f"WARNING: ENTSO-E returned no data — keeping existing cache at {ENTSO_PRICES_FILE}")
         errors.append("entso_empty")
