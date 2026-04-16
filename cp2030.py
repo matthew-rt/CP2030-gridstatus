@@ -7,6 +7,7 @@ Runs every 30 minutes via cron and writes a JSON file served by Caddy.
 """
 
 import json
+import math
 import os
 import sqlite3
 import sys
@@ -458,6 +459,14 @@ def run_model(elexon, neso, ic_records, state, interactive=False, timestamp=None
     if foreign_prices == entso_defaults:
         data_warnings.append("entso:default")
         print(f"WARNING: ENTSO-E prices unavailable — using hardcoded defaults")
+    elif not math.isfinite(entso_age_h):
+        # At least one zone fell back to its default (missing from cache)
+        missing_zones = [
+            IC_AREA.get(n, n) for n, _, fp, _ in INTERCONNECTORS
+            if foreign_prices.get(n) == fp
+        ]
+        data_warnings.append("entso:partial_defaults")
+        print(f"WARNING: ENTSO-E prices missing for zones: {sorted(set(missing_zones))} — using defaults")
     elif entso_age_h > 26:
         data_warnings.append(f"entso:stale_{int(entso_age_h)}h")
         print(f"WARNING: ENTSO-E prices are {int(entso_age_h)}h from reference time")
