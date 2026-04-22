@@ -27,7 +27,9 @@ Usage:
 import json
 import os
 import xml.etree.ElementTree as ET
+from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
+from typing import List, Tuple
 
 import requests
 from scipy.stats import norm
@@ -82,6 +84,39 @@ INTERCONNECTORS = [
     ("Greenlink", 500, 68, 3),  # Ireland (I-SEM)
     ("Moyle", 500, 68, 3),  # N. Ireland (I-SEM)
 ]
+
+
+# ── System Configuration ─────────────────────────────────────────────────────
+# Bundles the things that differ between modelled scenarios (e.g. CP2030 vs
+# real 2025 fleet). Bid distributions, sigmas, and efficiencies are assumed
+# invariant and stay as module-level constants. Subsidy *fractions* differ
+# because the fleet mix of RO vs CfD projects depends on the year modelled.
+@dataclass
+class SystemConfig:
+    gas_mw: int
+    biomass_mw: int
+    battery_power_mw: int
+    battery_energy_mwh: int
+    ldes_power_mw: int
+    ldes_energy_mwh: int
+    offshore_ro_fraction: float
+    onshore_ro_fraction: float
+    solar_legacy_fraction: float
+    interconnectors: List[Tuple[str, int, float, float]] = field(default_factory=list)
+
+
+CP2030_CONFIG = SystemConfig(
+    gas_mw=35_000,
+    biomass_mw=2_600,
+    battery_power_mw=25_000,
+    battery_energy_mwh=50_000,
+    ldes_power_mw=5_000,
+    ldes_energy_mwh=40_000,
+    offshore_ro_fraction=0.140,
+    onshore_ro_fraction=0.439,
+    solar_legacy_fraction=0.348,
+    interconnectors=INTERCONNECTORS,
+)
 
 
 # ── ENTSO-E Price Fetching ────────────────────────────────────────────────────
@@ -498,6 +533,7 @@ def build_merit_order(
     hydro_mw,
     gas_p=GAS_PRICE_P_PER_THERM,
     carbon=CARBON_PRICE_GBP_PER_TONNE,
+    config: SystemConfig = CP2030_CONFIG,
 ):
     """
     Build the domestic generation supply stack as a list of (mw, price, label)
@@ -506,7 +542,7 @@ def build_merit_order(
     interconnectors are resolved iteratively there.
 
     Non-dispatchable technologies offer only their actual output this period.
-    Dispatchable technologies offer their full CP2030 capacity.
+    Dispatchable technologies (gas, biomass) offer their full configured capacity.
     """
     ccgt_mean = ccgt_srmc(gas_p, carbon)
     ocgt_mean = ocgt_srmc(gas_p, carbon)
@@ -515,33 +551,33 @@ def build_merit_order(
 
     # Non-dispatchable: split by subsidy scheme, same load factor per scheme
     bands += _normal_bands(
-        offshore_mw * OFFSHORE_RO_FRACTION, *OFFSHORE_RO_BID, "offshore_wind_ro"
+        offshore_mw * config.offshore_ro_fraction, *OFFSHORE_RO_BID, "offshore_wind_ro"
     )
     bands += _normal_bands(
-        offshore_mw * (1 - OFFSHORE_RO_FRACTION), *OFFSHORE_CfD_BID, "offshore_wind_cfd"
+        offshore_mw * (1 - config.offshore_ro_fraction), *OFFSHORE_CfD_BID, "offshore_wind_cfd"
     )
     bands += _normal_bands(
-        onshore_mw * ONSHORE_RO_FRACTION, *ONSHORE_RO_BID, "onshore_wind_ro"
+        onshore_mw * config.onshore_ro_fraction, *ONSHORE_RO_BID, "onshore_wind_ro"
     )
     bands += _normal_bands(
-        onshore_mw * (1 - ONSHORE_RO_FRACTION), *ONSHORE_CfD_BID, "onshore_wind_cfd"
+        onshore_mw * (1 - config.onshore_ro_fraction), *ONSHORE_CfD_BID, "onshore_wind_cfd"
     )
     bands += _normal_bands(
-        solar_mw * SOLAR_LEGACY_FRACTION, *SOLAR_LEGACY_BID, "solar_legacy"
+        solar_mw * config.solar_legacy_fraction, *SOLAR_LEGACY_BID, "solar_legacy"
     )
     bands += _normal_bands(
-        solar_mw * (1 - SOLAR_LEGACY_FRACTION), *SOLAR_CfD_BID, "solar_cfd"
+        solar_mw * (1 - config.solar_legacy_fraction), *SOLAR_CfD_BID, "solar_cfd"
     )
     bands += _normal_bands(nuclear_mw, *NUCLEAR_BID, "nuclear", n=4)
     bands += _normal_bands(hydro_mw, *HYDRO_BID, "hydro")
 
-    # Dispatchable: offer full CP2030 capacity
-    bands += _normal_bands(CP2030_BIOMASS_MW, *BIOMASS_BID, "biomass", n=4)
+    # Dispatchable: offer full configured capacity
+    bands += _normal_bands(config.biomass_mw, *BIOMASS_BID, "biomass", n=4)
     bands += _normal_bands(
-        CP2030_GAS_MW * CCGT_FRACTION, ccgt_mean, GAS_CCGT_SIGMA, "gas_ccgt"
+        config.gas_mw * CCGT_FRACTION, ccgt_mean, GAS_CCGT_SIGMA, "gas_ccgt"
     )
     bands += _normal_bands(
-        CP2030_GAS_MW * OCGT_FRACTION, ocgt_mean, GAS_OCGT_SIGMA, "gas_ocgt"
+        config.gas_mw * OCGT_FRACTION, ocgt_mean, GAS_OCGT_SIGMA, "gas_ocgt"
     )
 
     bands.sort(key=lambda x: x[1])
@@ -596,11 +632,12 @@ def estimate_wholesale_price(
     nuclear_mw,
     hydro_mw,
     demand_mw,
-    battery_soc_mwh=CP2030_BATTERY_ENERGY_MWH // 2,
-    ldes_soc_mwh=CP2030_LDES_ENERGY_MWH // 2,
+    battery_soc_mwh=None,
+    ldes_soc_mwh=None,
     foreign_prices=None,
     gas_p=GAS_PRICE_P_PER_THERM,
     carbon=CARBON_PRICE_GBP_PER_TONNE,
+    config: SystemConfig = CP2030_CONFIG,
 ):
     """
     Estimate wholesale clearing price, marginal generator, interconnector flows,
@@ -639,6 +676,12 @@ def estimate_wholesale_price(
         ic_foreign_prices: Dict of {ic_name: foreign_price_gbp} actually used
         unserved_mw:    Capacity shortfall MW (0.0 if demand was fully met)
     """
+    # Default SoC to 50% of the configured battery/LDES energy if not given
+    if battery_soc_mwh is None:
+        battery_soc_mwh = config.battery_energy_mwh // 2
+    if ldes_soc_mwh is None:
+        ldes_soc_mwh = config.ldes_energy_mwh // 2
+
     # ── Storage bids: SRMC-based, derived from max charge price ─────────────
     # Discharge bid = max_charge_price / efficiency² (break-even given round-trip losses).
     # Charge price ceiling = the max charge price constant directly.
@@ -649,24 +692,24 @@ def estimate_wholesale_price(
 
     # ── Available storage MW (capped by SoC) ─────────────────────────────────
     bat_discharge_avail_mw = min(
-        CP2030_BATTERY_POWER_MW, battery_soc_mwh * 2 * BATTERY_EFFICIENCY
+        config.battery_power_mw, battery_soc_mwh * 2 * BATTERY_EFFICIENCY
     )
     ldes_discharge_avail_mw = min(
-        CP2030_LDES_POWER_MW, ldes_soc_mwh * 2 * LDES_EFFICIENCY
+        config.ldes_power_mw, ldes_soc_mwh * 2 * LDES_EFFICIENCY
     )
     bat_charge_avail_mw = max(0, min(
-        CP2030_BATTERY_POWER_MW,
-        (CP2030_BATTERY_ENERGY_MWH - battery_soc_mwh) / BATTERY_EFFICIENCY * 2,
+        config.battery_power_mw,
+        (config.battery_energy_mwh - battery_soc_mwh) / BATTERY_EFFICIENCY * 2,
     ))
     ldes_charge_avail_mw = max(0, min(
-        CP2030_LDES_POWER_MW,
-        (CP2030_LDES_ENERGY_MWH - ldes_soc_mwh) / LDES_EFFICIENCY * 2,
+        config.ldes_power_mw,
+        (config.ldes_energy_mwh - ldes_soc_mwh) / LDES_EFFICIENCY * 2,
     ))
 
     # ── IC parameters ─────────────────────────────────────────────────────────
     ic_params = {
         name: (cap, (foreign_prices or {}).get(name, default_fp), thresh)
-        for name, cap, default_fp, thresh in INTERCONNECTORS
+        for name, cap, default_fp, thresh in config.interconnectors
     }
 
     # ── Supply stack ──────────────────────────────────────────────────────────
@@ -685,7 +728,7 @@ def estimate_wholesale_price(
         "ldes_discharge", floor=max_ldes_charge_price + 0.01,
     )
     supply_bands = sorted(
-        build_merit_order(offshore_mw, onshore_mw, solar_mw, nuclear_mw, hydro_mw, gas_p, carbon)
+        build_merit_order(offshore_mw, onshore_mw, solar_mw, nuclear_mw, hydro_mw, gas_p, carbon, config=config)
         + storage_discharge_bands
         + ic_import_bands,
         key=lambda x: x[1],

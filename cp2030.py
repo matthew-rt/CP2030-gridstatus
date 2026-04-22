@@ -304,11 +304,16 @@ def actual_demand(elexon, neso, ic_records):
         "WIND",
     }
     net_ic = sum(r["generation"] for r in ic_records)
+    _to_num = lambda v: float(v) if isinstance(v, (int, float)) else 0
+    for f in domestic:
+        v = elexon.get(f, 0)
+        if not isinstance(v, (int, float)):
+            print(f"WARNING: elexon[{f!r}] = {v!r} (type {type(v).__name__})")
     return (
-        sum(elexon.get(f, 0) for f in domestic)
+        sum(_to_num(elexon.get(f, 0)) for f in domestic)
         + net_ic
-        + neso["embedded_wind_mw"]
-        + neso["embedded_solar_mw"]
+        + _to_num(neso["embedded_wind_mw"])
+        + _to_num(neso["embedded_solar_mw"])
     )
 
 
