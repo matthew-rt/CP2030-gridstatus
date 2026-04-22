@@ -246,11 +246,19 @@ def fetch_neso(date_str, sp):
                 f"NESO: no data for today, falling back to {r['SETTLEMENT_DATE'][:10]} SP {sp}"
             )
 
+    def _num(key):
+        v = r[key]
+        try:
+            return float(v)
+        except (TypeError, ValueError):
+            print(f"WARNING: NESO {key} = {v!r} (type {type(v).__name__}), defaulting to 0")
+            return 0.0
+
     return {
-        "embedded_wind_mw": r["EMBEDDED_WIND_FORECAST"],
-        "embedded_wind_capacity_mw": r["EMBEDDED_WIND_CAPACITY"],
-        "embedded_solar_mw": r["EMBEDDED_SOLAR_FORECAST"],
-        "embedded_solar_capacity_mw": r["EMBEDDED_SOLAR_CAPACITY"],
+        "embedded_wind_mw": _num("EMBEDDED_WIND_FORECAST"),
+        "embedded_wind_capacity_mw": _num("EMBEDDED_WIND_CAPACITY"),
+        "embedded_solar_mw": _num("EMBEDDED_SOLAR_FORECAST"),
+        "embedded_solar_capacity_mw": _num("EMBEDDED_SOLAR_CAPACITY"),
     }
 
 
